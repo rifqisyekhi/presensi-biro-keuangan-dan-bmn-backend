@@ -30,7 +30,11 @@ const Pegawai =
 // MODEL ABSENSI
 // =========================================================
 
-const Absensi = require("../models/absensi");
+const Absensi = require("../models/Absensi");
+
+const {
+  simpanFotoAbsensi,
+} = require("../utils/simpanFoto");
 
 // =========================================================
 // NORMALIZE NOMOR TELEPON
@@ -75,6 +79,56 @@ function getToday() {
 }
 
 // =========================================================
+// TANGGAL DARI CLIENT
+// =========================================================
+
+// Tanggal absensi ditentukan oleh perangkat pegawai, bukan
+// oleh jam server. Ini mencegah dua masalah: server dengan
+// timezone berbeda (mis. UTC) mencatat tanggal yang meleset,
+// dan Clock Out yang melewati tengah malam terpisah dari
+// Clock In-nya. Kalau client tidak mengirim tanggal yang
+// valid, baru jatuh ke tanggal server.
+
+function normalizeTanggal(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return "";
+  }
+
+  return trimmed;
+}
+
+// =========================================================
+// BULAN RIWAYAT
+// =========================================================
+
+// Riwayat diambil per bulan supaya daftarnya tidak tumbuh
+// tanpa batas. Batas baris di bawah hanya jaring pengaman:
+// satu pegawai maksimal satu absensi per tanggal, jadi satu
+// bulan tidak mungkin lebih dari 31 baris.
+
+const MAX_RIWAYAT = 100;
+
+function normalizeBulan(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+
+  if (!/^\d{4}-\d{2}$/.test(trimmed)) {
+    return "";
+  }
+
+  return trimmed;
+}
+
+// =========================================================
 // CARI PEGAWAI
 // =========================================================
 
@@ -111,7 +165,10 @@ router.get("/today/:no_wa", async (req, res) => {
       });
     }
 
-    const tanggal = getToday();
+    // Tanggal boleh dikirim client lewat query supaya
+    // "hari ini" mengikuti perangkat pegawai, bukan server.
+    const tanggal =
+      normalizeTanggal(req.query.tanggal) || getToday();
 
     const absensi = await Absensi.findOne({
       no_wa,
@@ -152,6 +209,7 @@ router.post("/clock-in", async (req, res) => {
       clockInPhoto,
       clockInLocation,
       clockInAddress,
+      tanggal: tanggalDikirim,
     } = req.body;
 
     console.log("=================================");
@@ -206,7 +264,8 @@ router.post("/clock-in", async (req, res) => {
     // TANGGAL
     // =====================================================
 
-    const tanggal = getToday();
+    const tanggal =
+      normalizeTanggal(tanggalDikirim) || getToday();
 
     // =====================================================
     // CEK ABSENSI HARI INI
@@ -225,6 +284,28 @@ router.post("/clock-in", async (req, res) => {
     }
 
     // =====================================================
+    // SIMPAN FOTO KE DISK
+    // =====================================================
+
+    let clockInPhotoPath = null;
+
+    try {
+      clockInPhotoPath = await simpanFotoAbsensi({
+        dataUrl: clockInPhoto,
+        tanggal,
+        nama: pegawai.nama,
+        no_wa: normalizedPhone,
+        jenis: "clock-in",
+      });
+    } catch (photoError) {
+      console.error("❌ Gagal menyimpan foto:", photoError);
+
+      return res.status(400).json({
+        message: photoError.message,
+      });
+    }
+
+    // =====================================================
     // SIMPAN ABSENSI
     // =====================================================
 
@@ -239,7 +320,7 @@ router.post("/clock-in", async (req, res) => {
 
       clockIn: clockIn || null,
 
-      clockInPhoto: clockInPhoto || null,
+      clockInPhoto: clockInPhotoPath,
 
       clockInLocation: clockInLocation || null,
 
@@ -268,6 +349,16 @@ router.post("/clock-in", async (req, res) => {
       data: absensi,
     });
   } catch (error) {
+    // Unique index (no_wa, tanggal): dua request Clock In
+    // yang masuk bersamaan.
+    if (error?.code === 11000) {
+      console.log("⚠️ Clock In ganda ditolak oleh index unik.");
+
+      return res.status(400).json({
+        message: "Anda sudah melakukan Clock In hari ini.",
+      });
+    }
+
     console.error("❌ Error Clock In:", error);
 
     return res.status(500).json({
@@ -290,6 +381,18 @@ router.put("/clock-out", async (req, res) => {
       clockOutLocation,
       clockOutAddress,
       kinerja_harian,
+
+      // Tanggal Clock In-nya, dikirim dari perangkat.
+      // Penting untuk Clock Out yang lewat tengah malam.
+      tanggal: tanggalDikirim,
+
+      // Dipakai hanya sebagai cadangan kalau dokumen
+      // Clock In belum ada di database.
+      attendanceType,
+      clockIn,
+      clockInPhoto,
+      clockInLocation,
+      clockInAddress,
     } = req.body;
 
     console.log("=================================");
@@ -333,21 +436,81 @@ router.put("/clock-out", async (req, res) => {
     // TANGGAL
     // =====================================================
 
-    const tanggal = getToday();
+    const tanggal =
+      normalizeTanggal(tanggalDikirim) || getToday();
 
     // =====================================================
     // CARI ABSENSI
     // =====================================================
 
-    const absensi = await Absensi.findOne({
+    let absensi = await Absensi.findOne({
       no_wa: normalizedPhone,
       tanggal,
     });
 
+    // =====================================================
+    // CADANGAN: BUAT DOKUMEN DARI DATA CLOCK IN
+    // Dipakai kalau request Clock In sempat gagal
+    // (offline / server mati) sehingga dokumennya
+    // tidak pernah tersimpan. Tanpa ini absensi
+    // hari itu hilang sama sekali dari riwayat.
+    // =====================================================
+
     if (!absensi) {
-      return res.status(404).json({
-        message:
-          "Data Clock In hari ini tidak ditemukan.",
+      if (!clockIn || !attendanceType) {
+        return res.status(404).json({
+          message:
+            "Data Clock In hari ini tidak ditemukan.",
+        });
+      }
+
+      if (!["WFH", "WFO", "DINAS"].includes(attendanceType)) {
+        return res.status(400).json({
+          message: "Jenis kehadiran tidak valid.",
+        });
+      }
+
+      console.log(
+        "⚠️ Dokumen Clock In tidak ada. Dibuat ulang dari payload Clock Out."
+      );
+
+      let clockInPhotoPath = null;
+
+      try {
+        clockInPhotoPath = await simpanFotoAbsensi({
+          dataUrl: clockInPhoto,
+          tanggal,
+          nama: pegawai.nama,
+          no_wa: normalizedPhone,
+          jenis: "clock-in",
+        });
+      } catch (photoError) {
+        console.error(
+          "❌ Gagal menyimpan foto Clock In:",
+          photoError
+        );
+
+        return res.status(400).json({
+          message: photoError.message,
+        });
+      }
+
+      absensi = new Absensi({
+        no_wa: normalizedPhone,
+
+        nama: pegawai.nama || "",
+
+        tanggal,
+
+        attendanceType,
+
+        clockIn,
+
+        clockInPhoto: clockInPhotoPath,
+
+        clockInLocation: clockInLocation || null,
+
+        clockInAddress: clockInAddress || null,
       });
     }
 
@@ -370,10 +533,30 @@ router.put("/clock-out", async (req, res) => {
     // UPDATE CLOCK OUT
     // =====================================================
 
+    let clockOutPhotoPath = null;
+
+    try {
+      clockOutPhotoPath = await simpanFotoAbsensi({
+        dataUrl: clockOutPhoto,
+        tanggal,
+        nama: pegawai.nama,
+        no_wa: normalizedPhone,
+        jenis: "clock-out",
+      });
+    } catch (photoError) {
+      console.error(
+        "❌ Gagal menyimpan foto Clock Out:",
+        photoError
+      );
+
+      return res.status(400).json({
+        message: photoError.message,
+      });
+    }
+
     absensi.clockOut = clockOut || null;
 
-    absensi.clockOutPhoto =
-      clockOutPhoto || null;
+    absensi.clockOutPhoto = clockOutPhotoPath;
 
     absensi.clockOutLocation =
       clockOutLocation || null;
@@ -424,6 +607,7 @@ router.get("/history/:no_wa", async (req, res) => {
     console.log("=================================");
     console.log("📋 GET RIWAYAT ABSENSI");
     console.log("No WA:", no_wa);
+    console.log("Bulan:", req.query.bulan || "(default)");
     console.log("=================================");
 
     if (!no_wa) {
@@ -432,19 +616,51 @@ router.get("/history/:no_wa", async (req, res) => {
       });
     }
 
-    const data = await Absensi.find({
-      no_wa,
-    })
+    // Daftar bulan yang punya data, terbaru dulu. Frontend
+    // memakai ini untuk mengisi pilihan filter tanpa perlu
+    // mengunduh seluruh riwayat lebih dulu.
+    const hasilBulan = await Absensi.aggregate([
+      { $match: { no_wa } },
+      { $group: { _id: { $substr: ["$tanggal", 0, 7] } } },
+      { $sort: { _id: -1 } },
+    ]);
+
+    const bulanTersedia = hasilBulan
+      .map((item) => item._id)
+      .filter(Boolean);
+
+    // Riwayat diambil per bulan, bukan seluruhnya, supaya
+    // daftarnya tidak tumbuh tanpa batas. Karena satu pegawai
+    // hanya bisa punya satu absensi per tanggal, satu bulan
+    // paling banyak 31 baris.
+    const bulan =
+      normalizeBulan(req.query.bulan) ||
+      bulanTersedia[0] ||
+      "";
+
+    const filter = { no_wa };
+
+    if (bulan) {
+      filter.tanggal = {
+        $gte: `${bulan}-01`,
+        $lte: `${bulan}-31`,
+      };
+    }
+
+    const data = await Absensi.find(filter)
       .sort({
         tanggal: -1,
         createdAt: -1,
       })
+      .limit(MAX_RIWAYAT)
       .lean();
 
     console.log("📦 Jumlah history:", data.length);
 
     return res.json({
       data,
+      bulan,
+      bulanTersedia,
     });
   } catch (error) {
     console.error("❌ Error history:", error);

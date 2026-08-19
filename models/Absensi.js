@@ -5,7 +5,6 @@ const absensiSchema = new mongoose.Schema(
     no_wa: {
       type: String,
       required: true,
-      index: true,
     },
 
     nama: {
@@ -88,6 +87,23 @@ const absensiSchema = new mongoose.Schema(
   {
     collection: "absensi",
     timestamps: true,
+  }
+);
+
+// =========================
+// INDEX
+// =========================
+
+// Satu pegawai hanya boleh punya satu dokumen
+// absensi per tanggal. Sekaligus mempercepat
+// query "absensi hari ini" dan riwayat per pegawai.
+absensiSchema.index(
+  {
+    no_wa: 1,
+    tanggal: 1,
+  },
+  {
+    unique: true,
   }
 );
 
