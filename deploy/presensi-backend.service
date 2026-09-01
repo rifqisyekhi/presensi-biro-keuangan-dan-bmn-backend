@@ -1,0 +1,41 @@
+# =========================================================
+# SYSTEMD — BACKEND PRESENSI
+# =========================================================
+#
+# Pasang di /etc/systemd/system/presensi-backend.service.
+# Lewati file ini kalau backend sudah dijalankan pakai pm2.
+
+[Unit]
+Description=Presensi Non-ASN backend (Express)
+Documentation=https://github.com/rifqisyekhi/presensi-biro-keuangan-dan-bmn-backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+User=www-data
+Group=www-data
+
+WorkingDirectory=/srv/presensi/backend
+
+# PORT, MONGODB_URI, dan UPLOAD_DIR dibaca oleh dotenv dari
+# /srv/presensi/backend/.env — jadi tidak perlu EnvironmentFile
+# di sini, cukup pastikan .env ada dan bisa dibaca www-data.
+ExecStart=/usr/bin/node index.js
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=presensi-backend
+
+# Backend hanya perlu menulis ke folder foto.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/srv/presensi/uploads
+
+[Install]
+WantedBy=multi-user.target
