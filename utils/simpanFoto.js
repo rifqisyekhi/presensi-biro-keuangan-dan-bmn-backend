@@ -8,11 +8,23 @@ const path = require("path");
 // Foto disimpan sebagai berkas di disk, bukan base64 di
 // MongoDB. Struktur foldernya:
 //
-//   <UPLOAD_DIR>/08-2026/18/Nama_Pegawai/clock-in.jpg
-//                 ^bulan  ^tgl ^pegawai   ^foto
+//   <UPLOAD_DIR>/Nama_Pegawai/08-2026/2026-08-18_masuk.jpg
+//                 ^pegawai     ^bulan  ^tanggal    ^jenis
+//
+// Satu folder per pegawai, di dalamnya satu folder per bulan.
+// Nama berkas memakai tanggal YYYY-MM-DD supaya isi folder
+// urut secara kronologis saat diurutkan berdasarkan nama, dan
+// tetap terbaca jelas ketika satu foto diunduh terpisah dari
+// foldernya.
 //
 // Folder dibuat otomatis saat foto pertama masuk, jadi tidak
 // ada folder kosong untuk pegawai yang tidak absen.
+//
+// CATATAN MIGRASI: struktur lama adalah
+// <UPLOAD_DIR>/08-2026/18/Nama_Pegawai/clock-in.jpg. Path
+// lengkap setiap foto tersimpan di dokumen absensi, jadi foto
+// lama tetap bisa dibuka selama berkasnya tidak dihapus —
+// yang berubah hanya foto yang masuk setelah ini.
 
 const UPLOAD_DIR =
   process.env.UPLOAD_DIR ||
@@ -50,22 +62,28 @@ function amankanNama(value) {
 }
 
 function pecahTanggal(tanggal) {
-  const [year, month, day] = String(tanggal).split("-");
+  const [year, month] = String(tanggal).split("-");
 
   return {
     // 08-2026
     folderBulan: `${month}-${year}`,
-
-    // 1 sampai 31, tanpa angka nol di depan
-    folderTanggal: String(parseInt(day, 10)),
   };
 }
+
+// Nama jenis foto yang dipakai di nama berkas. Petugas yang
+// memeriksa foto membaca "masuk"/"pulang", bukan istilah
+// teknis yang dipakai di kode dan database.
+const LABEL_JENIS_FILE = {
+  "clock-in": "masuk",
+  "clock-out": "pulang",
+};
 
 // =========================================================
 // SIMPAN SATU FOTO
 // =========================================================
 
-// Mengembalikan path publik (mis. "/uploads/08-2026/18/Budi/clock-in.jpg").
+// Mengembalikan path publik
+// (mis. "/uploads/Budi/08-2026/2026-08-18_masuk.jpg").
 // Kalau nilainya bukan data URL — misalnya sudah berupa path
 // dari penyimpanan sebelumnya, atau kosong — dikembalikan apa
 // adanya tanpa menulis berkas apa pun.
@@ -83,6 +101,13 @@ async function simpanFotoAbsensi({
 
   if (!dataUrl.startsWith("data:")) {
     return dataUrl;
+  }
+
+  // Tanggal ikut menyusun nama berkas, jadi bentuknya
+  // dipastikan di sini juga — jangan bergantung pada pemanggil
+  // untuk memvalidasinya.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(tanggal))) {
+    throw new Error("Format tanggal absensi tidak valid.");
   }
 
   const cocok = /^data:([\w/+.-]+);base64,(.*)$/s.exec(dataUrl);
@@ -111,7 +136,7 @@ async function simpanFotoAbsensi({
     );
   }
 
-  const { folderBulan, folderTanggal } = pecahTanggal(tanggal);
+  const { folderBulan } = pecahTanggal(tanggal);
 
   const folderPegawai =
     amankanNama(nama) ||
@@ -120,16 +145,19 @@ async function simpanFotoAbsensi({
 
   const direktori = path.join(
     UPLOAD_DIR,
-    folderBulan,
-    folderTanggal,
-    folderPegawai
+    folderPegawai,
+    folderBulan
   );
 
   await fs.mkdir(direktori, { recursive: true });
 
   // Satu pegawai hanya punya satu absensi per tanggal, jadi
-  // nama berkasnya tetap dan tidak perlu penanda unik.
-  const namaFile = `${jenis}.${ekstensi}`;
+  // nama berkasnya tetap dan tidak perlu penanda unik. Absen
+  // ulang di tanggal yang sama menimpa berkas lamanya, bukan
+  // menumpuk berkas baru.
+  const labelJenis = LABEL_JENIS_FILE[jenis] || amankanNama(jenis);
+
+  const namaFile = `${tanggal}_${labelJenis}.${ekstensi}`;
 
   await fs.writeFile(
     path.join(direktori, namaFile),
@@ -137,8 +165,8 @@ async function simpanFotoAbsensi({
   );
 
   return (
-    `${PUBLIC_PATH}/${folderBulan}/` +
-    `${folderTanggal}/${folderPegawai}/${namaFile}`
+    `${PUBLIC_PATH}/${folderPegawai}/` +
+    `${folderBulan}/${namaFile}`
   );
 }
 

@@ -61,7 +61,7 @@ sudo mkdir -p /srv/presensi/uploads
 
 Kalau folder foto lama ada di tempat lain, pindahkan isinya ke
 `/srv/presensi/uploads` dengan struktur yang sama
-(`<bulan-tahun>/<tanggal>/<pegawai>/clock-in.jpg`) — path itu
+(`<pegawai>/<bulan-tahun>/<tanggal>_masuk.jpg`) — path itu
 tersimpan di MongoDB, jadi tidak boleh berubah.
 
 ## Langkah 2 — environment backend

@@ -34,7 +34,7 @@ app.use(
 // ==========================================
 
 // Folder foto di VPS disajikan lewat /uploads,
-// mengikuti struktur <bulan-tahun>/<tanggal>/<pegawai>/.
+// mengikuti struktur <pegawai>/<bulan-tahun>/.
 console.log("📁 Folder foto absensi:", UPLOAD_DIR);
 
 app.use(
