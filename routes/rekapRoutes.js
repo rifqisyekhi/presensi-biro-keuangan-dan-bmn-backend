@@ -138,6 +138,29 @@ function bacaRentang(req) {
   return { dari, sampai };
 }
 
+// =========================================================
+// FILTER
+// =========================================================
+
+// Kosong berarti "semua". Nilai yang tidak dikenali juga
+// diperlakukan sebagai "semua" — filter yang salah ketik tidak
+// boleh diam-diam mengosongkan rekap dan membuat petugas
+// mengira tidak ada yang absen.
+
+function bacaFilter(req) {
+  const pegawai = normalizePhoneNumber(req.query.pegawai || "");
+
+  const jenisMentah = String(req.query.jenis || "")
+    .trim()
+    .toUpperCase();
+
+  const jenis = ["WFO", "WFH", "DINAS"].includes(jenisMentah)
+    ? jenisMentah
+    : "";
+
+  return { pegawai, jenis };
+}
+
 function namaHari(tanggal) {
   const waktu = Date.parse(`${tanggal}T00:00:00Z`);
 
@@ -154,7 +177,16 @@ function koordinat(lokasi) {
   return `${Number(lokasi.lat).toFixed(6)}, ${Number(lokasi.lng).toFixed(6)}`;
 }
 
-function tautanFoto(path) {
+// Path foto dikembalikan apa adanya di JSON — aplikasi web
+// disajikan dari origin yang sama dengan fotonya, jadi path
+// relatif selalu benar tanpa perlu tahu alamat servernya.
+//
+// PUBLIC_BASE_URL hanya dipakai untuk berkas Excel, karena
+// tautan di dalamnya dibuka dari luar browser dan wajib
+// absolut. Memakainya juga untuk JSON pernah membuat tautan
+// foto di halaman rekap menunjuk ke port 80 — yang di VPS ini
+// milik aplikasi lain.
+function tautanFotoAbsolut(path) {
   if (!path) return "";
 
   if (/^https?:\/\//i.test(path)) return path;
@@ -170,7 +202,7 @@ function tautanFoto(path) {
 // absensi hanya menyimpan nama dan nomor, sedangkan petugas
 // juga membutuhkan NIP, jabatan, dan unit kerja.
 
-async function ambilRekap(dari, sampai) {
+async function ambilRekap(dari, sampai, filter = {}) {
   const [absensi, pegawai] = await Promise.all([
     Absensi.find({
       tanggal: { $gte: dari, $lte: sampai },
@@ -189,7 +221,7 @@ async function ambilRekap(dari, sampai) {
     if (kunci) petaPegawai.set(kunci, p);
   }
 
-  return absensi.map((a) => {
+  const semua = absensi.map((a) => {
     const p = petaPegawai.get(normalizePhoneNumber(a.no_wa)) || {};
 
     return {
@@ -208,12 +240,42 @@ async function ambilRekap(dari, sampai) {
       kinerja: a.kinerja_harian || "",
       alamatMasuk: a.clockInAddress || a.clockInLocation?.address || "",
       koordinatMasuk: koordinat(a.clockInLocation),
-      fotoMasuk: tautanFoto(a.clockInPhoto),
+      fotoMasuk: a.clockInPhoto || "",
       alamatPulang: a.clockOutAddress || a.clockOutLocation?.address || "",
       koordinatPulang: koordinat(a.clockOutLocation),
-      fotoPulang: tautanFoto(a.clockOutPhoto),
+      fotoPulang: a.clockOutPhoto || "",
     };
   });
+
+  // Daftar pegawai untuk isi dropdown disusun SEBELUM filter
+  // nama diterapkan. Kalau disusun sesudahnya, begitu petugas
+  // memilih satu nama, isi dropdown-nya menyusut jadi satu
+  // orang dan dia tidak bisa berpindah ke nama lain.
+  const petaNama = new Map();
+
+  for (const b of semua) {
+    if (b.no_wa && !petaNama.has(b.no_wa)) {
+      petaNama.set(b.no_wa, b.nama || b.no_wa);
+    }
+  }
+
+  const daftarPegawai = [...petaNama.entries()]
+    .map(([no_wa, nama]) => ({ no_wa, nama }))
+    .sort((a, b) => String(a.nama).localeCompare(String(b.nama), "id"));
+
+  const data = semua.filter((b) => {
+    if (filter.pegawai && normalizePhoneNumber(b.no_wa) !== filter.pegawai) {
+      return false;
+    }
+
+    if (filter.jenis && b.attendanceType !== filter.jenis) {
+      return false;
+    }
+
+    return true;
+  });
+
+  return { data, daftarPegawai };
 }
 
 // =========================================================
@@ -246,12 +308,20 @@ router.get("/", async (req, res) => {
       return res.status(400).json({ message: rentang.error });
     }
 
-    const data = await ambilRekap(rentang.dari, rentang.sampai);
+    const filter = bacaFilter(req);
+
+    const { data, daftarPegawai } = await ambilRekap(
+      rentang.dari,
+      rentang.sampai,
+      filter,
+    );
 
     return res.json({
       dari: rentang.dari,
       sampai: rentang.sampai,
+      filter,
       total: data.length,
+      daftarPegawai,
       data,
     });
   } catch (error) {
@@ -306,7 +376,9 @@ function isiLembarRekap(sheet, data) {
       ["fotoMasuk", "Lihat foto"],
       ["fotoPulang", "Lihat foto"],
     ]) {
-      const nilai = baris[kunci];
+      // Excel dibuka di luar browser, jadi tautannya harus
+      // absolut lengkap dengan alamat server dan portnya.
+      const nilai = tautanFotoAbsolut(baris[kunci]);
 
       if (!nilai) continue;
 
@@ -396,7 +468,13 @@ router.get("/export", async (req, res) => {
       return res.status(400).json({ message: rentang.error });
     }
 
-    const data = await ambilRekap(rentang.dari, rentang.sampai);
+    const filter = bacaFilter(req);
+
+    const { data } = await ambilRekap(
+      rentang.dari,
+      rentang.sampai,
+      filter,
+    );
 
     // exceljs baru dimuat di sini supaya kegagalan memuatnya
     // tidak ikut menjatuhkan endpoint absensi saat server
@@ -411,7 +489,24 @@ router.get("/export", async (req, res) => {
     isiLembarRekap(workbook.addWorksheet("Rekap"), data);
     isiLembarRingkasan(workbook.addWorksheet("Ringkasan"), data);
 
-    const namaBerkas = `Rekap-Absensi-${rentang.dari}-sd-${rentang.sampai}.xlsx`;
+    // Nama berkas ikut menyebut filternya, supaya beberapa
+    // unduhan dengan rentang sama tidak jadi berkas kembar
+    // yang tak terbedakan di folder Unduhan petugas.
+    const penanda = [];
+
+    if (filter.jenis) penanda.push(filter.jenis);
+
+    if (filter.pegawai) {
+      const orang = data[0]?.nama;
+
+      penanda.push(
+        (orang || filter.pegawai).replace(/[^A-Za-z0-9]+/g, "_"),
+      );
+    }
+
+    const namaBerkas =
+      `Rekap-Absensi-${rentang.dari}-sd-${rentang.sampai}` +
+      `${penanda.length ? "-" + penanda.join("-") : ""}.xlsx`;
 
     res.setHeader(
       "Content-Type",

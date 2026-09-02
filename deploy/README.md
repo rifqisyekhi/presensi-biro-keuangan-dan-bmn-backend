@@ -99,6 +99,22 @@ coba, `--apply` = sungguhan).
 | `GET /api/rekap?dari=&sampai=&pemohon=` | Data rekap JSON |
 | `GET /api/rekap/export?dari=&sampai=&pemohon=` | Berkas `.xlsx` dua lembar |
 
+Dua filter opsional, berlaku untuk JSON maupun Excel:
+
+* `pegawai=` nomor WhatsApp (format `08…` atau `62…`, sama saja)
+* `jenis=` `WFO` / `WFH` / `DINAS` — kosong berarti semua
+
+Nilai `jenis` yang tidak dikenali diperlakukan sebagai "semua",
+bukan "tidak ada". Filter yang salah ketik tidak boleh
+diam-diam mengosongkan rekap dan membuat petugas mengira tidak
+ada yang absen.
+
+Rekap memuat **semua** absensi di rentang itu, termasuk yang
+baru absen masuk dan belum absen pulang. Itu disengaja —
+petugas justru perlu melihat siapa yang lupa absen pulang.
+Baris seperti itu ditandai kuning di kolom Jam Pulang, dan
+jumlahnya muncul di lembar Ringkasan.
+
 Dipakai bersama oleh halaman Rekap di aplikasi web dan menu 10
 di bot SisKA. Butuh `npm install` karena ada dependensi baru
 (`exceljs`).

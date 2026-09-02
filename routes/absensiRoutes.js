@@ -51,6 +51,12 @@ const {
   normalizeBulan,
 } = require("../utils/format");
 
+const {
+  MODE,
+  RADIUS_METER,
+  cekRadius,
+} = require("../utils/lokasi");
+
 // =========================================================
 // BULAN RIWAYAT
 // =========================================================
@@ -61,6 +67,19 @@ const {
 // bulan tidak mungkin lebih dari 31 baris.
 
 const MAX_RIWAYAT = 100;
+
+// =========================================================
+// BATAS KINERJA HARIAN
+// =========================================================
+
+// Kinerja harian dibaca petugas dalam bentuk rekap, satu baris
+// per absensi. Terlalu panjang membuat kolomnya tidak terbaca,
+// terlalu pendek tidak berarti apa-apa. Batas ini ditegakkan
+// di sini karena backend adalah satu-satunya jalur masuk yang
+// dipakai bersama aplikasi web dan bot WhatsApp.
+
+const KINERJA_MIN = 10;
+const KINERJA_MAX = 100;
 
 // =========================================================
 // CARI PEGAWAI
@@ -215,6 +234,40 @@ router.post("/clock-in", async (req, res) => {
         message: "Anda sudah melakukan Clock In hari ini.",
         data: existingAttendance,
       });
+    }
+
+    // =====================================================
+    // BATAS RADIUS LOKASI
+    // =====================================================
+
+    // Sama seperti validasi kinerja di Clock Out: diperiksa
+    // SEBELUM foto ditulis ke disk, supaya permintaan yang
+    // ditolak tidak meninggalkan berkas yatim.
+
+    const radius = cekRadius({
+      attendanceType,
+      lokasi: clockInLocation,
+    });
+
+    if (radius.diperiksa) {
+      console.log(
+        `📍 Jarak dari kantor: ${radius.jarak} m ` +
+          `(batas ${RADIUS_METER} m, mode ${MODE})`,
+      );
+
+      if (!radius.dalamRadius && MODE === "enforce") {
+        return res.status(400).json({
+          message: radius.pesan,
+          jarak: radius.jarak,
+        });
+      }
+
+      if (!radius.dalamRadius) {
+        console.warn(
+          `⚠️  DI LUAR RADIUS: ${pegawai.nama} — ${radius.jarak} m. ` +
+            "Tetap diterima karena mode masih 'warn'.",
+        );
+      }
     }
 
     // =====================================================
@@ -464,6 +517,35 @@ router.put("/clock-out", async (req, res) => {
     }
 
     // =====================================================
+    // VALIDASI KINERJA HARIAN
+    // =====================================================
+
+    // Diperiksa SEBELUM foto ditulis ke disk. Kalau urutannya
+    // dibalik, permintaan yang ditolak tetap meninggalkan
+    // berkas foto yatim yang tidak dirujuk dokumen mana pun.
+
+    const kinerjaBersih =
+      typeof kinerja_harian === "string"
+        ? kinerja_harian.trim()
+        : "";
+
+    if (kinerjaBersih.length < KINERJA_MIN) {
+      return res.status(400).json({
+        message:
+          `Kinerja harian minimal ${KINERJA_MIN} huruf. ` +
+          `Saat ini ${kinerjaBersih.length} huruf.`,
+      });
+    }
+
+    if (kinerjaBersih.length > KINERJA_MAX) {
+      return res.status(400).json({
+        message:
+          `Kinerja harian maksimal ${KINERJA_MAX} huruf. ` +
+          `Saat ini ${kinerjaBersih.length} huruf.`,
+      });
+    }
+
+    // =====================================================
     // UPDATE CLOCK OUT
     // =====================================================
 
@@ -498,10 +580,7 @@ router.put("/clock-out", async (req, res) => {
     absensi.clockOutAddress =
       clockOutAddress || null;
 
-    absensi.kinerja_harian =
-      typeof kinerja_harian === "string"
-        ? kinerja_harian.trim()
-        : "";
+    absensi.kinerja_harian = kinerjaBersih;
 
     await absensi.save();
 
