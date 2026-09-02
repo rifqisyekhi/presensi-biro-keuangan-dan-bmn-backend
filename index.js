@@ -5,6 +5,7 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 
 const absensiRoutes = require("./routes/absensiRoutes");
+const rekapRoutes = require("./routes/rekapRoutes");
 
 const { UPLOAD_DIR } = require("./utils/simpanFoto");
 
@@ -235,6 +236,12 @@ app.post("/api/login", async (req, res) => {
 // ==========================================
 
 app.use("/api/absensi", absensiRoutes);
+
+// ==========================================
+// REKAP UNTUK PETUGAS
+// ==========================================
+
+app.use("/api/rekap", rekapRoutes);
 
 // ==========================================
 // ROUTE DASAR

@@ -37,71 +37,19 @@ const {
 } = require("../utils/simpanFoto");
 
 // =========================================================
-// NORMALIZE NOMOR TELEPON
+// NORMALISASI NOMOR DAN TANGGAL
 // =========================================================
 
-function normalizePhoneNumber(value) {
-  if (value === null || value === undefined) {
-    return "";
-  }
+// Dipindah ke utils/format.js supaya routes/rekapRoutes.js
+// memakai aturan normalisasi yang sama persis — daftar nomor
+// petugas dibandingkan dengan nomor pegawai memakai fungsi ini.
 
-  const digits = String(value)
-    .trim()
-    .replace(/\D/g, "");
-
-  if (!digits) {
-    return "";
-  }
-
-  if (digits.startsWith("0")) {
-    return `62${digits.slice(1)}`;
-  }
-
-  if (!digits.startsWith("62")) {
-    return `62${digits}`;
-  }
-
-  return digits;
-}
-
-// =========================================================
-// TANGGAL HARI INI
-// =========================================================
-
-function getToday() {
-  const now = new Date();
-
-  return (
-    `${now.getFullYear()}-` +
-    `${String(now.getMonth() + 1).padStart(2, "0")}-` +
-    `${String(now.getDate()).padStart(2, "0")}`
-  );
-}
-
-// =========================================================
-// TANGGAL DARI CLIENT
-// =========================================================
-
-// Tanggal absensi ditentukan oleh perangkat pegawai, bukan
-// oleh jam server. Ini mencegah dua masalah: server dengan
-// timezone berbeda (mis. UTC) mencatat tanggal yang meleset,
-// dan Clock Out yang melewati tengah malam terpisah dari
-// Clock In-nya. Kalau client tidak mengirim tanggal yang
-// valid, baru jatuh ke tanggal server.
-
-function normalizeTanggal(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-
-  const trimmed = value.trim();
-
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    return "";
-  }
-
-  return trimmed;
-}
+const {
+  normalizePhoneNumber,
+  getToday,
+  normalizeTanggal,
+  normalizeBulan,
+} = require("../utils/format");
 
 // =========================================================
 // BULAN RIWAYAT
@@ -113,20 +61,6 @@ function normalizeTanggal(value) {
 // bulan tidak mungkin lebih dari 31 baris.
 
 const MAX_RIWAYAT = 100;
-
-function normalizeBulan(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-
-  const trimmed = value.trim();
-
-  if (!/^\d{4}-\d{2}$/.test(trimmed)) {
-    return "";
-  }
-
-  return trimmed;
-}
 
 // =========================================================
 // CARI PEGAWAI

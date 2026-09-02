@@ -131,6 +131,38 @@ Buka `http://192.168.221.44/` — judul tab harus
 "frontend", browser masih memuat build lama dari cache atau
 site nginx lama masih aktif.
 
+## Rekap dan export untuk petugas
+
+Tiga endpoint, dipakai bersama oleh aplikasi web dan bot SisKA:
+
+| Endpoint | Guna |
+|---|---|
+| `GET /api/rekap/izin?pemohon=` | Cek apakah nomor itu petugas (untuk menyembunyikan menu) |
+| `GET /api/rekap?dari=&sampai=&pemohon=` | Data rekap seluruh pegawai dalam bentuk JSON |
+| `GET /api/rekap/export?dari=&sampai=&pemohon=` | Berkas `.xlsx` dua lembar: Rekap dan Ringkasan |
+
+Dua variabel baru di `.env` (lihat `deploy/.env.example`):
+
+* `PETUGAS_ABSENSI` — nomor petugas, dipisah koma. **Kosong
+  berarti tidak ada yang boleh**, disengaja supaya daftar yang
+  belum diisi tidak malah membuka data satu biro.
+* `PUBLIC_BASE_URL` — alamat dasar tautan foto di berkas Excel.
+
+Butuh `npm install` di VPS karena ada dependensi baru
+(`exceljs`).
+
+### Batas pengamanannya
+
+Perlu dinyatakan terang-terangan: nomor pemohon dikirim oleh
+klien dan bisa dipalsukan siapa pun yang tahu nomor seorang
+petugas. Pembatasan ini menutup akses tak sengaja oleh pegawai
+biasa yang sudah login — bukan serangan yang disengaja.
+
+Penyebabnya ada di `POST /api/login`: username dan password
+sama-sama nomor telepon, tidak ada token maupun peran. Selama
+itu belum diganti, jangan mengekspos port 5000 ke luar jaringan
+kantor, dan perlakukan berkas rekap sebagai dokumen internal.
+
 ## Catatan
 
 **Foto lewat nginx langsung.** `/uploads/` sekarang diteruskan
