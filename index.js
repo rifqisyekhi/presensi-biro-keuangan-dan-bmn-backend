@@ -257,6 +257,23 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server berjalan di http://localhost:${PORT}`);
+// Mengikat ke 127.0.0.1 saja: backend hanya boleh dijangkau
+// lewat nginx (dan bot SisKA yang memang memanggil
+// 127.0.0.1:5000 dari VPS yang sama). Tanpa ini seluruh API —
+// termasuk rekap absensi satu biro dan login yang memakai
+// nomor telepon sebagai kata sandi — bisa dipanggil langsung
+// dari jaringan kantor tanpa melewati satu pun aturan nginx.
+//
+// Diambil dari .env supaya bisa dikembalikan ke "0.0.0.0"
+// tanpa mengubah kode, misalnya saat menelusuri masalah.
+const HOST = process.env.HOST || "127.0.0.1";
+
+app.listen(PORT, HOST, () => {
+  console.log(`🚀 Server berjalan di http://${HOST}:${PORT}`);
+
+  if (HOST !== "127.0.0.1") {
+    console.warn(
+      `⚠️  Backend terbuka ke ${HOST} — bisa dijangkau langsung tanpa melewati nginx.`,
+    );
+  }
 });
