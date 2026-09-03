@@ -143,6 +143,7 @@ router.get("/today/:no_wa", async (req, res) => {
     // harus sama persis dengan yang tercetak di berkas rekap.
     const jamKerja = hitungJamKerja({
       tanggal: absensi.tanggal,
+      attendanceType: absensi.attendanceType,
       jamMasuk: absensi.clockIn || "",
       jamPulang: absensi.clockOut || "",
     });
@@ -157,6 +158,66 @@ router.get("/today/:no_wa", async (req, res) => {
 
     return res.status(500).json({
       message: "Gagal mengambil data absensi.",
+      error: error.message,
+    });
+  }
+});
+
+// =========================================================
+// BELUM ABSEN PULANG
+// =========================================================
+//
+// Dipakai penjadwal pengingat di bot WhatsApp. Mengembalikan
+// pegawai yang sudah absen masuk tapi belum absen pulang pada
+// tanggal tertentu, lengkap dengan jam wajib pulangnya.
+//
+// Tidak dijaga daftar petugas: backend hanya mendengarkan di
+// 127.0.0.1, jadi endpoint ini cuma bisa dipanggil dari dalam
+// VPS — dan bot memang berjalan di sana.
+
+router.get("/belum-pulang", async (req, res) => {
+  try {
+    const tanggal =
+      normalizeTanggal(req.query.tanggal) || getToday();
+
+    const daftar = await Absensi.find({
+      tanggal,
+      clockIn: { $nin: [null, ""] },
+      $or: [{ clockOut: null }, { clockOut: "" }],
+    }).lean();
+
+    return res.json({
+      tanggal,
+      total: daftar.length,
+      data: daftar.map((a) => ({
+        no_wa: a.no_wa,
+        nama: a.nama || "",
+        tanggal: a.tanggal,
+        attendanceType: a.attendanceType || "",
+        clockIn: a.clockIn || "",
+        ...(() => {
+          const jk = hitungJamKerja({
+            tanggal: a.tanggal,
+            attendanceType: a.attendanceType,
+            jamMasuk: a.clockIn || "",
+            jamPulang: "",
+          });
+
+          // Dinas luar tidak punya jamHarusCheckout, tapi tetap
+          // butuh acuan kapan mulai diingatkan — kalau tidak,
+          // absensinya menggantung tanpa ada yang menegur.
+          return {
+            jamHarusCheckout: jk.jamHarusCheckout,
+            jamPulangJadwal: jk.jamPulangJadwal,
+          };
+        })(),
+      })),
+    });
+  } catch (error) {
+    console.error("❌ Error belum-pulang:", error);
+
+    return res.status(500).json({
+      message: "Gagal mengambil daftar yang belum absen pulang.",
       error: error.message,
     });
   }

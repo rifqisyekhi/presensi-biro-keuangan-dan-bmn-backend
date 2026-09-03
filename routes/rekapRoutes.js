@@ -347,7 +347,7 @@ router.get("/", async (req, res) => {
 // bot WhatsApp harus memberi angka yang persis sama dengan
 // kolom "Jam Harus Checkout" di berkas rekap.
 
-const { hitungJamKerja } = require("../utils/jamKerja");
+const { hitungJamKerja, menitDariJam } = require("../utils/jamKerja");
 // =========================================================
 // SUSUNAN KOLOM
 // =========================================================
@@ -371,17 +371,17 @@ const KOLOM = [
   { header: "Hari", key: "hari", width: 9 },
   { header: "Status", key: "jenis", width: 16 },
   { header: "Keterangan Cuti", key: "keteranganCuti", width: 19 },
-  { header: "Checkin", key: "jamMasuk", width: 9 },
-  { header: "Checkout", key: "jamPulang", width: 9 },
-  { header: "Jam Harus Checkout", key: "jamHarusCheckout", width: 11 },
-  { header: "Jam Masuk", key: "jamMasukJadwal", width: 11 },
-  { header: "Jam Toleransi Masuk", key: "jamToleransiMasuk", width: 11 },
-  { header: "Jam Pulang", key: "jamPulangJadwal", width: 11 },
-  { header: "Jam Toleransi Pulang", key: "jamToleransiPulang", width: 11 },
+  { header: "Checkin", key: "jamMasuk", waktu: true, width: 9 },
+  { header: "Checkout", key: "jamPulang", waktu: true, width: 9 },
+  { header: "Jam Harus Checkout", key: "jamHarusCheckout", waktu: true, width: 11 },
+  { header: "Jam Masuk", key: "jamMasukJadwal", waktu: true, width: 11 },
+  { header: "Jam Toleransi Masuk", key: "jamToleransiMasuk", waktu: true, width: 11 },
+  { header: "Jam Pulang", key: "jamPulangJadwal", waktu: true, width: 11 },
+  { header: "Jam Toleransi Pulang", key: "jamToleransiPulang", waktu: true, width: 11 },
   { header: "Terlambat (menit)", key: "terlambat", width: 11 },
   { header: "Menit Kerja", key: "menitKerja", width: 11 },
-  { header: "Durasi Lembur", key: "durasiLembur", width: 11 },
-  { header: "Pembulatan Lembur", key: "pembulatanLembur", width: 11 },
+  { header: "Durasi Lembur", key: "durasiLembur", waktu: true, width: 11 },
+  { header: "Pembulatan Lembur", key: "pembulatanLembur", waktu: true, width: 11 },
   { header: "Kinerja Harian", key: "kinerja", width: 45 },
   { header: "Lokasi Masuk", key: "alamatMasuk", width: 45 },
   { header: "Foto Masuk", key: "fotoMasuk", width: 14 },
@@ -473,14 +473,15 @@ function isiLembarRekap(sheet, data, dari, sampai) {
     };
   }
 
-  // Baris penomoran kolom (1, 2, 3, …) seperti di templat.
-  const nomor = sheet.getRow(5);
+  sheet.views = [{ state: "frozen", ySplit: 4 }];
 
-  nomor.values = KOLOM.map((_, i) => i + 1);
-  nomor.font = { italic: true, size: 9 };
-  nomor.alignment = { horizontal: "center" };
-
-  sheet.views = [{ state: "frozen", ySplit: 5 }];
+  // Kolom jam ditulis sebagai nilai waktu Excel, bukan teks.
+  // Kalau ditulis sebagai teks, Excel menandainya dengan
+  // segitiga hijau "angka disimpan sebagai teks" dan jamnya
+  // tidak bisa diurutkan atau dihitung.
+  for (const kolom of KOLOM) {
+    if (kolom.waktu) sheet.getColumn(kolom.key).numFmt = "hh:mm";
+  }
 
   // -------------------------------------------------------
   // ISI
@@ -491,12 +492,24 @@ function isiLembarRekap(sheet, data, dari, sampai) {
   for (const baris of data) {
     urut++;
 
-    const row = sheet.addRow({
+    const isi = {
       ...baris,
       no: urut,
       keteranganCuti: "",
       ...hitungJamKerja(baris),
-    });
+    };
+
+    // Excel menyimpan jam sebagai pecahan satu hari:
+    // 11:53 = 713 menit / 1440 = 0,4951.
+    for (const kolom of KOLOM) {
+      if (!kolom.waktu) continue;
+
+      const menit = menitDariJam(isi[kolom.key]);
+
+      isi[kolom.key] = menit === null ? null : menit / 1440;
+    }
+
+    const row = sheet.addRow(isi);
 
     // Kolom foto ditulis sebagai tautan yang bisa diklik
     // langsung dari Excel, bukan URL panjang yang memenuhi

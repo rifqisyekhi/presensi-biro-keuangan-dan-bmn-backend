@@ -42,6 +42,14 @@ function hariJumat(tanggal) {
   return !Number.isNaN(waktu) && new Date(waktu).getUTCDay() === 5;
 }
 
+// Jenis kehadiran yang tidak terikat jam pulang kantor.
+// Dinas luar mengikuti jadwal kegiatan di tempat tujuan, jadi
+// "Jam Harus Checkout" tidak berlaku — dan karena lembur
+// dihitung dari selisih terhadap jam itu, lemburnya ikut tidak
+// terdefinisi. Dikosongkan, bukan diisi nol: nol berarti
+// "tidak lembur", kosong berarti "tidak berlaku".
+const TANPA_JAM_PULANG = ["DINAS"];
+
 // Menghitung kolom-kolom jam kerja untuk satu baris absensi.
 function hitungJamKerja(baris) {
   const jumat = hariJumat(baris.tanggal);
@@ -87,23 +95,44 @@ function hitungJamKerja(baris) {
   const pembulatanLembur =
     durasiLembur === null ? null : Math.floor(durasiLembur / 60) * 60;
 
+  const tanpaJamPulang = TANPA_JAM_PULANG.includes(
+    String(baris.attendanceType || "").toUpperCase(),
+  );
+
   return {
-    jamHarusCheckout: jamDariMenit(harusCheckout),
+    jamHarusCheckout: tanpaJamPulang ? "" : jamDariMenit(harusCheckout),
     jamMasukJadwal: JAM_MASUK,
     jamToleransiMasuk: jamDariMenit(toleransiMasuk),
+
+    // Jadwal pulang kantor tetap dikembalikan meski jenisnya
+    // dinas luar: penjadwal pengingat memakainya sebagai acuan
+    // kapan mulai menegur, supaya absensi dinas luar tidak
+    // diam-diam menggantung sampai lewat tengah malam.
     jamPulangJadwal: jamDariMenit(pulang),
     jamToleransiPulang: jamDariMenit(pulang + TOLERANSI_MENIT),
-    terlambat: terlambat === null ? "" : terlambat,
-    menitKerja: menitKerja === null ? "" : menitKerja,
-    durasiLembur: durasiLembur === null ? "" : jamDariMenit(durasiLembur),
+
+    // Ikut dikosongkan untuk dinas luar: "terlambat" mengukur
+    // keterlambatan datang ke kantor, dan "menit kerja"
+    // mengandaikan jam istirahat kantor — keduanya tidak
+    // bermakna bagi orang yang memang bertugas di luar.
+    terlambat: tanpaJamPulang || terlambat === null ? "" : terlambat,
+    menitKerja: tanpaJamPulang || menitKerja === null ? "" : menitKerja,
+
+    durasiLembur:
+      tanpaJamPulang || durasiLembur === null
+        ? ""
+        : jamDariMenit(durasiLembur),
     pembulatanLembur:
-      pembulatanLembur === null ? "" : jamDariMenit(pembulatanLembur),
+      tanpaJamPulang || pembulatanLembur === null
+        ? ""
+        : jamDariMenit(pembulatanLembur),
   };
 }
 
 
 module.exports = {
   JAM_MASUK,
+  TANPA_JAM_PULANG,
   TOLERANSI_MENIT,
   MENIT_KERJA_WAJIB,
   ISTIRAHAT,
