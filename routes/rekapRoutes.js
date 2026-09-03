@@ -338,36 +338,165 @@ router.get("/", async (req, res) => {
 // EXPORT EXCEL
 // =========================================================
 
+// =========================================================
+// PERHITUNGAN JAM KERJA
+// =========================================================
+
+// Dipindah ke utils/jamKerja.js supaya aturan yang sama juga
+// bisa dipakai endpoint /today — pesan pengingat jam pulang di
+// bot WhatsApp harus memberi angka yang persis sama dengan
+// kolom "Jam Harus Checkout" di berkas rekap.
+
+const { hitungJamKerja } = require("../utils/jamKerja");
+// =========================================================
+// SUSUNAN KOLOM
+// =========================================================
+//
+// Mengikuti templat "Rekap Presensi Pegawai Biro Keuangan dan
+// BMN", dengan tiga perbedaan yang disengaja:
+//
+//   - Kolom potongan dan lembur dibuang: non-ASN tidak dikenai
+//     potongan, dan data lembur ada di koleksi lain.
+//   - Kolom Kinerja Harian, Lokasi, dan tautan Foto ditambahkan
+//     — foto bercap geotag itulah yang diperiksa petugas, dan
+//     templat lembur ASN tidak punya tempat untuknya.
+//   - Keterangan Cuti disediakan tapi masih kosong, menunggu
+//     fitur cutinya dibuat.
+
 const KOLOM = [
+  { header: "No", key: "no", width: 5 },
+  { header: "Nama Pegawai", key: "nama", width: 33 },
+  { header: "NIP / NIK", key: "nip", width: 20 },
   { header: "Tanggal", key: "tanggal", width: 12 },
-  { header: "Hari", key: "hari", width: 10 },
-  { header: "Nama", key: "nama", width: 28 },
-  { header: "NIP", key: "nip", width: 22 },
-  { header: "No WhatsApp", key: "no_wa", width: 16 },
-  { header: "Jabatan", key: "jabatan", width: 24 },
-  { header: "Unit Kerja", key: "sub_unit", width: 22 },
-  { header: "Kategori", key: "kategori_pegawai", width: 14 },
-  { header: "Jenis Kehadiran", key: "jenis", width: 18 },
-  { header: "Jam Masuk", key: "jamMasuk", width: 11 },
-  { header: "Jam Pulang", key: "jamPulang", width: 11 },
+  { header: "Hari", key: "hari", width: 9 },
+  { header: "Status", key: "jenis", width: 16 },
+  { header: "Keterangan Cuti", key: "keteranganCuti", width: 19 },
+  { header: "Checkin", key: "jamMasuk", width: 9 },
+  { header: "Checkout", key: "jamPulang", width: 9 },
+  { header: "Jam Harus Checkout", key: "jamHarusCheckout", width: 11 },
+  { header: "Jam Masuk", key: "jamMasukJadwal", width: 11 },
+  { header: "Jam Toleransi Masuk", key: "jamToleransiMasuk", width: 11 },
+  { header: "Jam Pulang", key: "jamPulangJadwal", width: 11 },
+  { header: "Jam Toleransi Pulang", key: "jamToleransiPulang", width: 11 },
+  { header: "Terlambat (menit)", key: "terlambat", width: 11 },
+  { header: "Menit Kerja", key: "menitKerja", width: 11 },
+  { header: "Durasi Lembur", key: "durasiLembur", width: 11 },
+  { header: "Pembulatan Lembur", key: "pembulatanLembur", width: 11 },
   { header: "Kinerja Harian", key: "kinerja", width: 45 },
-  { header: "Alamat Masuk", key: "alamatMasuk", width: 45 },
-  { header: "Koordinat Masuk", key: "koordinatMasuk", width: 22 },
-  { header: "Foto Masuk", key: "fotoMasuk", width: 16 },
-  { header: "Alamat Pulang", key: "alamatPulang", width: 45 },
-  { header: "Koordinat Pulang", key: "koordinatPulang", width: 22 },
-  { header: "Foto Pulang", key: "fotoPulang", width: 16 },
+  { header: "Lokasi Masuk", key: "alamatMasuk", width: 45 },
+  { header: "Foto Masuk", key: "fotoMasuk", width: 14 },
+  { header: "Foto Pulang", key: "fotoPulang", width: 14 },
 ];
 
-function isiLembarRekap(sheet, data) {
+const NAMA_BULAN = [
+  "JANUARI",
+  "FEBRUARI",
+  "MARET",
+  "APRIL",
+  "MEI",
+  "JUNI",
+  "JULI",
+  "AGUSTUS",
+  "SEPTEMBER",
+  "OKTOBER",
+  "NOVEMBER",
+  "DESEMBER",
+];
+
+// Judul menyebut bulan hanya kalau rentangnya memang persis
+// satu bulan penuh. Berkas contoh menuliskan "BULAN JANUARI"
+// di semua sheet termasuk Agustus — kekeliruan yang tidak
+// perlu ditiru.
+function judulPeriode(dari, sampai) {
+  const [tahun, bulan] = dari.split("-");
+
+  const hariTerakhir = new Date(
+    Date.UTC(Number(tahun), Number(bulan), 0),
+  ).getUTCDate();
+
+  const sebulanPenuh =
+    dari === `${tahun}-${bulan}-01` &&
+    sampai === `${tahun}-${bulan}-${String(hariTerakhir).padStart(2, "0")}`;
+
+  return sebulanPenuh
+    ? `BULAN ${NAMA_BULAN[Number(bulan) - 1]} ${tahun}`
+    : `PERIODE ${dari} s.d. ${sampai}`;
+}
+
+function isiLembarRekap(sheet, data, dari, sampai) {
   sheet.columns = KOLOM;
 
-  sheet.getRow(1).font = { bold: true };
-  sheet.getRow(1).alignment = { vertical: "middle" };
-  sheet.views = [{ state: "frozen", ySplit: 1 }];
+  // -------------------------------------------------------
+  // JUDUL
+  // -------------------------------------------------------
+
+  const kolomTerakhir = String.fromCharCode(64 + KOLOM.length);
+
+  sheet.mergeCells(`A1:${kolomTerakhir}1`);
+  sheet.mergeCells(`A2:${kolomTerakhir}2`);
+
+  sheet.getCell("A1").value =
+    `REKAPITULASI PRESENSI NON-ASN ${judulPeriode(dari, sampai)}`;
+  sheet.getCell("A2").value = "BIRO KEUANGAN DAN BMN";
+
+  for (const sel of ["A1", "A2"]) {
+    sheet.getCell(sel).font = { bold: true, size: sel === "A1" ? 13 : 11 };
+    sheet.getCell(sel).alignment = { horizontal: "center" };
+  }
+
+  // Baris 3 sengaja dikosongkan, mengikuti templat.
+  sheet.getRow(3).height = 8;
+
+  // -------------------------------------------------------
+  // KEPALA TABEL
+  // -------------------------------------------------------
+
+  const kepala = sheet.getRow(4);
+
+  kepala.values = KOLOM.map((k) => k.header);
+  kepala.font = { bold: true };
+  kepala.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+  kepala.height = 32;
+
+  for (let c = 1; c <= KOLOM.length; c++) {
+    kepala.getCell(c).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFE2E8F0" },
+    };
+
+    kepala.getCell(c).border = {
+      top: { style: "thin" },
+      left: { style: "thin" },
+      bottom: { style: "thin" },
+      right: { style: "thin" },
+    };
+  }
+
+  // Baris penomoran kolom (1, 2, 3, …) seperti di templat.
+  const nomor = sheet.getRow(5);
+
+  nomor.values = KOLOM.map((_, i) => i + 1);
+  nomor.font = { italic: true, size: 9 };
+  nomor.alignment = { horizontal: "center" };
+
+  sheet.views = [{ state: "frozen", ySplit: 5 }];
+
+  // -------------------------------------------------------
+  // ISI
+  // -------------------------------------------------------
+
+  let urut = 0;
 
   for (const baris of data) {
-    const row = sheet.addRow(baris);
+    urut++;
+
+    const row = sheet.addRow({
+      ...baris,
+      no: urut,
+      keteranganCuti: "",
+      ...hitungJamKerja(baris),
+    });
 
     // Kolom foto ditulis sebagai tautan yang bisa diklik
     // langsung dari Excel, bukan URL panjang yang memenuhi
@@ -399,9 +528,11 @@ function isiLembarRekap(sheet, data) {
     }
   }
 
+  // Autofilter dipasang di baris kepala tabel (baris 4),
+  // bukan baris 1 yang kini berisi judul.
   sheet.autoFilter = {
-    from: { row: 1, column: 1 },
-    to: { row: 1, column: KOLOM.length },
+    from: { row: 4, column: 1 },
+    to: { row: 4, column: KOLOM.length },
   };
 }
 
@@ -486,7 +617,12 @@ router.get("/export", async (req, res) => {
     workbook.creator = "Presensi Non-ASN Biro Keuangan dan BMN";
     workbook.created = new Date();
 
-    isiLembarRekap(workbook.addWorksheet("Rekap"), data);
+    isiLembarRekap(
+      workbook.addWorksheet("Rekap"),
+      data,
+      rentang.dari,
+      rentang.sampai,
+    );
     isiLembarRingkasan(workbook.addWorksheet("Ringkasan"), data);
 
     // Nama berkas ikut menyebut filternya, supaya beberapa

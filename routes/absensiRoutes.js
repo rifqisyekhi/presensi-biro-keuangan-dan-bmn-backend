@@ -57,6 +57,8 @@ const {
   cekRadius,
 } = require("../utils/lokasi");
 
+const { hitungJamKerja } = require("../utils/jamKerja");
+
 // =========================================================
 // BULAN RIWAYAT
 // =========================================================
@@ -135,9 +137,20 @@ router.get("/today/:no_wa", async (req, res) => {
       });
     }
 
+    // Perhitungan jam kerja disertakan supaya bot WhatsApp
+    // tidak perlu menyalin aturannya sendiri. Satu sumber:
+    // angka "Jam Harus Checkout" yang diberitahukan ke pegawai
+    // harus sama persis dengan yang tercetak di berkas rekap.
+    const jamKerja = hitungJamKerja({
+      tanggal: absensi.tanggal,
+      jamMasuk: absensi.clockIn || "",
+      jamPulang: absensi.clockOut || "",
+    });
+
     return res.json({
       exists: true,
       data: absensi,
+      jamKerja,
     });
   } catch (error) {
     console.error("❌ Error GET absensi:", error);
