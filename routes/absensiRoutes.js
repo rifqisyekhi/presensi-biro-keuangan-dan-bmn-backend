@@ -405,9 +405,18 @@ router.post("/clock-in", async (req, res) => {
     console.log("No WA:", normalizedPhone);
     console.log("Nama:", pegawai.nama);
 
+    // Jam harus checkout dikirim balik supaya bot bisa langsung
+    // memberitahu pegawai, tanpa perlu memanggil /today lagi dan
+    // tanpa menyalin aturan jam kerja ke sisi bot.
     return res.status(201).json({
       message: "Clock In berhasil.",
       data: absensi,
+      jamKerja: hitungJamKerja({
+        tanggal: absensi.tanggal,
+        attendanceType: absensi.attendanceType,
+        jamMasuk: absensi.clockIn || "",
+        jamPulang: "",
+      }),
     });
   } catch (error) {
     // Unique index (no_wa, tanggal): dua request Clock In
