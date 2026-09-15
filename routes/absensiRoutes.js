@@ -146,6 +146,7 @@ router.get("/today/:no_wa", async (req, res) => {
       attendanceType: absensi.attendanceType,
       jamMasuk: absensi.clockIn || "",
       jamPulang: absensi.clockOut || "",
+      lemburDisetujui: absensi.lembur?.disetujui === true,
     });
 
     return res.json({
@@ -195,6 +196,11 @@ router.get("/belum-pulang", async (req, res) => {
         tanggal: a.tanggal,
         attendanceType: a.attendanceType || "",
         clockIn: a.clockIn || "",
+
+        // Yang lemburnya disetujui memang sengaja belum pulang.
+        // Bot memakai ini supaya tidak menegurnya tiap jam.
+        lemburDisetujui: a.lembur?.disetujui === true,
+
         ...(() => {
           const jk = hitungJamKerja({
             tanggal: a.tanggal,
@@ -678,9 +684,20 @@ router.put("/clock-out", async (req, res) => {
     );
     console.log("=================================");
 
+    // jamKerja ikut dikirim balik: kalau lembur pegawai ini sudah
+    // disetujui, bot langsung meminta bukti lembur dengan jam mulai
+    // = jam harus checkout di sini, tanpa menghitung ulang aturan
+    // jam kerja di sisinya sendiri.
     return res.json({
       message: "Clock Out berhasil.",
       data: absensi,
+      jamKerja: hitungJamKerja({
+        tanggal: absensi.tanggal,
+        attendanceType: absensi.attendanceType,
+        jamMasuk: absensi.clockIn || "",
+        jamPulang: absensi.clockOut || "",
+        lemburDisetujui: absensi.lembur?.disetujui === true,
+      }),
     });
   } catch (error) {
     console.error("❌ Error Clock Out:", error);

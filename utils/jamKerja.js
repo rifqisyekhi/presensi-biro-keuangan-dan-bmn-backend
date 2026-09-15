@@ -99,6 +99,13 @@ function hitungJamKerja(baris) {
     String(baris.attendanceType || "").toUpperCase(),
   );
 
+  // Lembur baru dihitung kalau atasan sudah menyetujuinya. Pulang
+  // lewat dari jam harus checkout tanpa persetujuan tercatat
+  // "00.00" — bukan kosong: kosong berarti aturannya tidak
+  // berlaku (dinas luar), nol berarti tidak ada lembur. Jam pulang
+  // aslinya tetap terlihat di kolom Checkout.
+  const lemburBerlaku = baris.lemburDisetujui === true;
+
   return {
     jamHarusCheckout: tanpaJamPulang ? "" : jamDariMenit(harusCheckout),
     jamMasukJadwal: JAM_MASUK,
@@ -121,11 +128,11 @@ function hitungJamKerja(baris) {
     durasiLembur:
       tanpaJamPulang || durasiLembur === null
         ? ""
-        : jamDariMenit(durasiLembur),
+        : jamDariMenit(lemburBerlaku ? durasiLembur : 0),
     pembulatanLembur:
       tanpaJamPulang || pembulatanLembur === null
         ? ""
-        : jamDariMenit(pembulatanLembur),
+        : jamDariMenit(lemburBerlaku ? pembulatanLembur : 0),
   };
 }
 

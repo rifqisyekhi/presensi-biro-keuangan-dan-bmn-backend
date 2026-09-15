@@ -237,6 +237,7 @@ async function ambilRekap(dari, sampai, filter = {}) {
       attendanceType: a.attendanceType || "",
       jamMasuk: a.clockIn || "",
       jamPulang: a.clockOut || "",
+      lemburDisetujui: a.lembur?.disetujui === true,
       kinerja: a.kinerja_harian || "",
       alamatMasuk: a.clockInAddress || a.clockInLocation?.address || "",
       koordinatMasuk: koordinat(a.clockInLocation),
