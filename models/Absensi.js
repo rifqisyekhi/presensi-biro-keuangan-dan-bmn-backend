@@ -85,6 +85,21 @@ const absensiSchema = new mongoose.Schema(
     },
 
     // =========================
+    // BEBAS JAM KERJA KANTOR
+    // =========================
+    //
+    // Disalin dari jabatan pegawai saat absen masuk (supir dan
+    // sejenisnya). Disimpan di dokumen absensi, bukan dibaca ulang
+    // dari data pegawai, karena dua alasan: endpoint yang membaca
+    // absensi tidak perlu ikut mencari data pegawai, dan absensi
+    // lama tetap memakai aturan yang berlaku saat itu kalau
+    // jabatan orangnya berubah di kemudian hari.
+    bebasJamKerja: {
+      type: Boolean,
+      default: false,
+    },
+
+    // =========================
     // LEMBUR
     // =========================
     //

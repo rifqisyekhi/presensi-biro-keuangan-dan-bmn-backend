@@ -50,6 +50,28 @@ function hariJumat(tanggal) {
 // "tidak lembur", kosong berarti "tidak berlaku".
 const TANPA_JAM_PULANG = ["DINAS"];
 
+// Jabatan yang jam kerjanya mengikuti tugas, bukan jam kantor.
+//
+// Supir mengantar pejabat: berangkat pukul 09.00 dan baru selesai
+// pukul 20.00 kalau memang begitu jadwal antarnya. Menerapkan jam
+// masuk, jam harus pulang, keterlambatan, dan lembur kantor
+// kepadanya sama saja menghukum orang karena mengikuti perintah.
+//
+// Berbeda dari dinas luar, ini melekat pada ORANGNYA, bukan pada
+// jenis kehadiran yang dipilih hari itu.
+const JABATAN_BEBAS_JAM_KERJA = (
+  process.env.JABATAN_BEBAS_JAM_KERJA || "supir,sopir,pengemudi,driver"
+)
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+function jabatanBebasJamKerja(jabatan) {
+  return JABATAN_BEBAS_JAM_KERJA.includes(
+    String(jabatan || "").trim().toLowerCase(),
+  );
+}
+
 // Menghitung kolom-kolom jam kerja untuk satu baris absensi.
 function hitungJamKerja(baris) {
   const jumat = hariJumat(baris.tanggal);
@@ -95,9 +117,14 @@ function hitungJamKerja(baris) {
   const pembulatanLembur =
     durasiLembur === null ? null : Math.floor(durasiLembur / 60) * 60;
 
-  const tanpaJamPulang = TANPA_JAM_PULANG.includes(
+  const dinasLuar = TANPA_JAM_PULANG.includes(
     String(baris.attendanceType || "").toUpperCase(),
   );
+
+  // Dua jalan menuju "tidak terikat jam kantor": jenis kehadiran
+  // hari itu (dinas luar) atau jabatannya (supir). Bedanya cuma
+  // pada Menit Kerja — lihat catatan di bawah.
+  const bebasJadwal = dinasLuar || baris.bebasJamKerja === true;
 
   // Lembur baru dihitung kalau atasan sudah menyetujuinya. Pulang
   // lewat dari jam harus checkout tanpa persetujuan tercatat
@@ -107,7 +134,7 @@ function hitungJamKerja(baris) {
   const lemburBerlaku = baris.lemburDisetujui === true;
 
   return {
-    jamHarusCheckout: tanpaJamPulang ? "" : jamDariMenit(harusCheckout),
+    jamHarusCheckout: bebasJadwal ? "" : jamDariMenit(harusCheckout),
     jamMasukJadwal: JAM_MASUK,
     jamToleransiMasuk: jamDariMenit(toleransiMasuk),
 
@@ -118,19 +145,23 @@ function hitungJamKerja(baris) {
     jamPulangJadwal: jamDariMenit(pulang),
     jamToleransiPulang: jamDariMenit(pulang + TOLERANSI_MENIT),
 
-    // Ikut dikosongkan untuk dinas luar: "terlambat" mengukur
-    // keterlambatan datang ke kantor, dan "menit kerja"
-    // mengandaikan jam istirahat kantor — keduanya tidak
-    // bermakna bagi orang yang memang bertugas di luar.
-    terlambat: tanpaJamPulang || terlambat === null ? "" : terlambat,
-    menitKerja: tanpaJamPulang || menitKerja === null ? "" : menitKerja,
+    // "Terlambat" mengukur keterlambatan datang ke kantor —
+    // tidak bermakna bagi yang jamnya mengikuti tugas.
+    terlambat: bebasJadwal || terlambat === null ? "" : terlambat,
+
+    // Menit Kerja hanya dikosongkan untuk DINAS LUAR, karena
+    // rumusnya memotong jam istirahat kantor yang tidak dijalani
+    // di tempat tugas. Untuk supir tetap dihitung: berapa lama ia
+    // bertugas hari itu justru angka yang paling berguna, dan
+    // istirahatnya tetap ada di sela mengantar.
+    menitKerja: dinasLuar || menitKerja === null ? "" : menitKerja,
 
     durasiLembur:
-      tanpaJamPulang || durasiLembur === null
+      bebasJadwal || durasiLembur === null
         ? ""
         : jamDariMenit(lemburBerlaku ? durasiLembur : 0),
     pembulatanLembur:
-      tanpaJamPulang || pembulatanLembur === null
+      bebasJadwal || pembulatanLembur === null
         ? ""
         : jamDariMenit(lemburBerlaku ? pembulatanLembur : 0),
   };
@@ -140,6 +171,8 @@ function hitungJamKerja(baris) {
 module.exports = {
   JAM_MASUK,
   TANPA_JAM_PULANG,
+  JABATAN_BEBAS_JAM_KERJA,
+  jabatanBebasJamKerja,
   TOLERANSI_MENIT,
   MENIT_KERJA_WAJIB,
   ISTIRAHAT,

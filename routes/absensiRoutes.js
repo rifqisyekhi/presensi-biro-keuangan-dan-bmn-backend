@@ -57,7 +57,10 @@ const {
   cekRadius,
 } = require("../utils/lokasi");
 
-const { hitungJamKerja } = require("../utils/jamKerja");
+const {
+  hitungJamKerja,
+  jabatanBebasJamKerja,
+} = require("../utils/jamKerja");
 
 // =========================================================
 // BULAN RIWAYAT
@@ -144,6 +147,7 @@ router.get("/today/:no_wa", async (req, res) => {
     const jamKerja = hitungJamKerja({
       tanggal: absensi.tanggal,
       attendanceType: absensi.attendanceType,
+      bebasJamKerja: absensi.bebasJamKerja === true,
       jamMasuk: absensi.clockIn || "",
       jamPulang: absensi.clockOut || "",
       lemburDisetujui: absensi.lembur?.disetujui === true,
@@ -201,10 +205,15 @@ router.get("/belum-pulang", async (req, res) => {
         // Bot memakai ini supaya tidak menegurnya tiap jam.
         lemburDisetujui: a.lembur?.disetujui === true,
 
+        // Begitu juga supir: jam pulangnya mengikuti tugas antar,
+        // jadi tidak ada jam wajib yang bisa dijadikan acuan tegur.
+        bebasJamKerja: a.bebasJamKerja === true,
+
         ...(() => {
           const jk = hitungJamKerja({
             tanggal: a.tanggal,
             attendanceType: a.attendanceType,
+            bebasJamKerja: a.bebasJamKerja === true,
             jamMasuk: a.clockIn || "",
             jamPulang: "",
           });
@@ -324,10 +333,26 @@ router.post("/clock-in", async (req, res) => {
     // SEBELUM foto ditulis ke disk, supaya permintaan yang
     // ditolak tidak meninggalkan berkas yatim.
 
-    const radius = cekRadius({
-      attendanceType,
-      lokasi: clockInLocation,
-    });
+    // Jabatan yang jam kerjanya mengikuti tugas — supir dan
+    // sejenisnya. Disimpan ke dokumen absensi di bawah.
+    const bebasJamKerja = jabatanBebasJamKerja(pegawai.jabatan);
+
+    // Supir absen masuk di mana pun tugas mengantar dimulai, dan
+    // itu memang jarang di kantor. Radius kantor tidak diperiksa
+    // untuknya; foto bercap lokasinya tetap tersimpan dan tetap
+    // bisa diperiksa petugas.
+    const radius = bebasJamKerja
+      ? { diperiksa: false }
+      : cekRadius({
+          attendanceType,
+          lokasi: clockInLocation,
+        });
+
+    if (bebasJamKerja) {
+      console.log(
+        `📍 Radius dilewati: ${pegawai.nama} berjabatan "${pegawai.jabatan}".`,
+      );
+    }
 
     if (radius.diperiksa) {
       console.log(
@@ -385,6 +410,8 @@ router.post("/clock-in", async (req, res) => {
 
       attendanceType,
 
+      bebasJamKerja,
+
       clockIn: clockIn || null,
 
       clockInPhoto: clockInPhotoPath,
@@ -420,6 +447,7 @@ router.post("/clock-in", async (req, res) => {
       jamKerja: hitungJamKerja({
         tanggal: absensi.tanggal,
         attendanceType: absensi.attendanceType,
+        bebasJamKerja: absensi.bebasJamKerja === true,
         jamMasuk: absensi.clockIn || "",
         jamPulang: "",
       }),
@@ -694,6 +722,7 @@ router.put("/clock-out", async (req, res) => {
       jamKerja: hitungJamKerja({
         tanggal: absensi.tanggal,
         attendanceType: absensi.attendanceType,
+        bebasJamKerja: absensi.bebasJamKerja === true,
         jamMasuk: absensi.clockIn || "",
         jamPulang: absensi.clockOut || "",
         lemburDisetujui: absensi.lembur?.disetujui === true,

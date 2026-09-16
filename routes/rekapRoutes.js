@@ -238,6 +238,13 @@ async function ambilRekap(dari, sampai, filter = {}) {
       jamMasuk: a.clockIn || "",
       jamPulang: a.clockOut || "",
       lemburDisetujui: a.lembur?.disetujui === true,
+
+      // Jabatan ikut diperiksa, bukan hanya penanda di dokumen
+      // absensi: absensi yang dibuat SEBELUM fitur ini ada belum
+      // punya penandanya, dan baris supir di bulan berjalan tetap
+      // harus terbaca benar di rekap.
+      bebasJamKerja:
+        a.bebasJamKerja === true || jabatanBebasJamKerja(p.jabatan),
       kinerja: a.kinerja_harian || "",
       alamatMasuk: a.clockInAddress || a.clockInLocation?.address || "",
       koordinatMasuk: koordinat(a.clockInLocation),
@@ -348,7 +355,11 @@ router.get("/", async (req, res) => {
 // bot WhatsApp harus memberi angka yang persis sama dengan
 // kolom "Jam Harus Checkout" di berkas rekap.
 
-const { hitungJamKerja, menitDariJam } = require("../utils/jamKerja");
+const {
+  hitungJamKerja,
+  menitDariJam,
+  jabatanBebasJamKerja,
+} = require("../utils/jamKerja");
 // =========================================================
 // SUSUNAN KOLOM
 // =========================================================
