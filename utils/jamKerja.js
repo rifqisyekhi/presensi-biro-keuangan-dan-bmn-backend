@@ -72,6 +72,37 @@ function jabatanBebasJamKerja(jabatan) {
   );
 }
 
+// Jabatan yang lemburnya otomatis, tanpa pengajuan dan tanpa
+// persetujuan atasan.
+//
+// Petugas kebersihan selalu pulang paling akhir: ruangan baru
+// bisa dibersihkan setelah pegawai lain pergi. Lemburnya bukan
+// kejadian luar biasa yang perlu diajukan dan disetujui satu per
+// satu, melainkan bentuk pekerjaannya sehari-hari. Menyuruh
+// mereka mengajukan izin tiap malam untuk sesuatu yang memang
+// jadi tugasnya hanya menambah pekerjaan administrasi bagi orang
+// yang paling tidak punya waktu untuk itu.
+//
+// Yang tetap dicatat adalah KINERJA LEMBUR-nya — apa yang
+// dikerjakan selama jam itu — supaya lembur ini tetap bisa
+// dipertanggungjawabkan meski tidak melewati persetujuan.
+//
+// Berbeda dari supir: jam kantornya tetap berlaku bagi petugas
+// kebersihan (ada jam masuk, ada jam harus checkout, ada
+// keterlambatan). Yang berubah hanya cara lemburnya diakui.
+const JABATAN_LEMBUR_OTOMATIS = (
+  process.env.JABATAN_LEMBUR_OTOMATIS || "petugas kebersihan"
+)
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+function jabatanLemburOtomatis(jabatan) {
+  return JABATAN_LEMBUR_OTOMATIS.includes(
+    String(jabatan || "").trim().toLowerCase(),
+  );
+}
+
 // Menghitung kolom-kolom jam kerja untuk satu baris absensi.
 function hitungJamKerja(baris) {
   const jumat = hariJumat(baris.tanggal);
@@ -131,7 +162,10 @@ function hitungJamKerja(baris) {
   // "00.00" — bukan kosong: kosong berarti aturannya tidak
   // berlaku (dinas luar), nol berarti tidak ada lembur. Jam pulang
   // aslinya tetap terlihat di kolom Checkout.
-  const lemburBerlaku = baris.lemburDisetujui === true;
+  // Dua jalan menuju lembur yang diakui: disetujui atasan lewat
+  // bot, atau melekat pada jabatannya (petugas kebersihan).
+  const lemburBerlaku =
+    baris.lemburDisetujui === true || baris.lemburOtomatis === true;
 
   return {
     jamHarusCheckout: bebasJadwal ? "" : jamDariMenit(harusCheckout),
@@ -173,6 +207,8 @@ module.exports = {
   TANPA_JAM_PULANG,
   JABATAN_BEBAS_JAM_KERJA,
   jabatanBebasJamKerja,
+  JABATAN_LEMBUR_OTOMATIS,
+  jabatanLemburOtomatis,
   TOLERANSI_MENIT,
   MENIT_KERJA_WAJIB,
   ISTIRAHAT,

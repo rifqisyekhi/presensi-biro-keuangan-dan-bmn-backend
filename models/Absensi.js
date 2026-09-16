@@ -42,6 +42,17 @@ const absensiSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Apa yang dikerjakan SELAMA jam lembur, terpisah dari
+    // kinerja harian. Hanya terisi untuk yang lemburnya
+    // otomatis (petugas kebersihan): karena lembur mereka tidak
+    // melewati pengajuan dan persetujuan atasan, catatan inilah
+    // satu-satunya keterangan tentang apa yang dikerjakan pada
+    // jam-jam itu.
+    kinerja_lembur: {
+      type: String,
+      default: "",
+    },
+
     // =========================
     // FOTO
     // =========================
@@ -95,6 +106,24 @@ const absensiSchema = new mongoose.Schema(
     // lama tetap memakai aturan yang berlaku saat itu kalau
     // jabatan orangnya berubah di kemudian hari.
     bebasJamKerja: {
+      type: Boolean,
+      default: false,
+    },
+
+    // =========================
+    // LEMBUR OTOMATIS
+    // =========================
+    //
+    // Petugas kebersihan lembur hampir setiap hari — ruangan
+    // baru bisa dibersihkan setelah pegawai lain pulang — jadi
+    // lemburnya diakui tanpa pengajuan dan tanpa persetujuan
+    // atasan. Lihat JABATAN_LEMBUR_OTOMATIS di utils/jamKerja.js.
+    //
+    // Disalin dari jabatan saat absen masuk dengan alasan yang
+    // sama seperti bebasJamKerja di atas: absensi lama tetap
+    // memakai aturan yang berlaku saat itu kalau jabatan
+    // orangnya berubah di kemudian hari.
+    lemburOtomatis: {
       type: Boolean,
       default: false,
     },

@@ -254,7 +254,14 @@ async function ambilRekap(dari, sampai, filter = {}) {
       // harus terbaca benar di rekap.
       bebasJamKerja:
         a.bebasJamKerja === true || jabatanBebasJamKerja(p.jabatan),
+
+      // Sama alasannya: absensi petugas kebersihan yang dibuat
+      // sebelum aturan ini ada belum punya penandanya, tapi
+      // lemburnya tetap harus terhitung di rekap bulan berjalan.
+      lemburOtomatis:
+        a.lemburOtomatis === true || jabatanLemburOtomatis(p.jabatan),
       kinerja: a.kinerja_harian || "",
+      kinerjaLembur: a.kinerja_lembur || "",
       alamatMasuk: a.clockInAddress || a.clockInLocation?.address || "",
       koordinatMasuk: koordinat(a.clockInLocation),
       fotoMasuk: a.clockInPhoto || "",
@@ -466,6 +473,7 @@ const {
   hitungJamKerja,
   menitDariJam,
   jabatanBebasJamKerja,
+  jabatanLemburOtomatis,
 } = require("../utils/jamKerja");
 // =========================================================
 // SUSUNAN KOLOM
@@ -502,6 +510,11 @@ const KOLOM = [
   { header: "Durasi Lembur", key: "durasiLembur", waktu: true, width: 11 },
   { header: "Pembulatan Lembur", key: "pembulatanLembur", waktu: true, width: 11 },
   { header: "Kinerja Harian", key: "kinerja", width: 45 },
+
+  // Hanya terisi untuk jabatan yang lemburnya otomatis (petugas
+  // kebersihan). Lembur mereka tidak melewati pengajuan dan
+  // persetujuan atasan, jadi kolom inilah pertanggungjawabannya.
+  { header: "Kinerja Lembur", key: "kinerjaLembur", width: 45 },
   { header: "Lokasi Masuk", key: "alamatMasuk", width: 45 },
   { header: "Foto Masuk", key: "fotoMasuk", width: 14 },
   { header: "Foto Pulang", key: "fotoPulang", width: 14 },

@@ -60,6 +60,8 @@ const {
 const {
   hitungJamKerja,
   jabatanBebasJamKerja,
+  jabatanLemburOtomatis,
+  menitDariJam,
 } = require("../utils/jamKerja");
 
 // =========================================================
@@ -148,6 +150,7 @@ router.get("/today/:no_wa", async (req, res) => {
       tanggal: absensi.tanggal,
       attendanceType: absensi.attendanceType,
       bebasJamKerja: absensi.bebasJamKerja === true,
+      lemburOtomatis: absensi.lemburOtomatis === true,
       jamMasuk: absensi.clockIn || "",
       jamPulang: absensi.clockOut || "",
       lemburDisetujui: absensi.lembur?.disetujui === true,
@@ -208,6 +211,12 @@ router.get("/belum-pulang", async (req, res) => {
         // Begitu juga supir: jam pulangnya mengikuti tugas antar,
         // jadi tidak ada jam wajib yang bisa dijadikan acuan tegur.
         bebasJamKerja: a.bebasJamKerja === true,
+
+        // Petugas kebersihan pun begitu: ia memang pulang paling
+        // akhir hampir setiap hari, karena ruangan baru bisa
+        // dibersihkan setelah yang lain pergi. Menegurnya tiap jam
+        // hanya mengganggu orang yang sedang bekerja.
+        lemburOtomatis: a.lemburOtomatis === true,
 
         ...(() => {
           const jk = hitungJamKerja({
@@ -337,6 +346,11 @@ router.post("/clock-in", async (req, res) => {
     // sejenisnya. Disimpan ke dokumen absensi di bawah.
     const bebasJamKerja = jabatanBebasJamKerja(pegawai.jabatan);
 
+    // Jabatan yang lemburnya diakui tanpa pengajuan — petugas
+    // kebersihan. Ikut disimpan ke dokumen absensi supaya aturan
+    // hari ini tidak berubah kalau jabatannya diubah nanti.
+    const lemburOtomatis = jabatanLemburOtomatis(pegawai.jabatan);
+
     // Supir absen masuk di mana pun tugas mengantar dimulai, dan
     // itu memang jarang di kantor. Radius kantor tidak diperiksa
     // untuknya; foto bercap lokasinya tetap tersimpan dan tetap
@@ -412,6 +426,8 @@ router.post("/clock-in", async (req, res) => {
 
       bebasJamKerja,
 
+      lemburOtomatis,
+
       clockIn: clockIn || null,
 
       clockInPhoto: clockInPhotoPath,
@@ -448,6 +464,7 @@ router.post("/clock-in", async (req, res) => {
         tanggal: absensi.tanggal,
         attendanceType: absensi.attendanceType,
         bebasJamKerja: absensi.bebasJamKerja === true,
+        lemburOtomatis: absensi.lemburOtomatis === true,
         jamMasuk: absensi.clockIn || "",
         jamPulang: "",
       }),
@@ -485,6 +502,7 @@ router.put("/clock-out", async (req, res) => {
       clockOutLocation,
       clockOutAddress,
       kinerja_harian,
+      kinerja_lembur,
 
       // Tanggal Clock In-nya, dikirim dari perangkat.
       // Penting untuk Clock Out yang lewat tengah malam.
@@ -608,6 +626,15 @@ router.put("/clock-out", async (req, res) => {
 
         attendanceType,
 
+        // Ikut disalin dari jabatan, sama seperti di Clock In.
+        // Tanpa ini, absensi yang terpaksa dibuat ulang di sini
+        // kehilangan aturan khusus jabatannya: supir jadi
+        // terhitung terlambat, dan lembur petugas kebersihan
+        // tercatat nol.
+        bebasJamKerja: jabatanBebasJamKerja(pegawai.jabatan),
+
+        lemburOtomatis: jabatanLemburOtomatis(pegawai.jabatan),
+
         clockIn,
 
         clockInPhoto: clockInPhotoPath,
@@ -663,6 +690,56 @@ router.put("/clock-out", async (req, res) => {
     }
 
     // =====================================================
+    // VALIDASI KINERJA LEMBUR
+    // =====================================================
+    //
+    // Lembur petugas kebersihan diakui tanpa pengajuan dan tanpa
+    // persetujuan atasan, jadi catatan inilah satu-satunya
+    // keterangan tentang apa yang dikerjakan pada jam-jam itu.
+    // Tanpanya, lembur otomatis jadi jam yang dibayar tanpa
+    // pertanggungjawaban apa pun.
+    //
+    // Baru diwajibkan setelah lemburnya benar-benar berjumlah
+    // satu jam penuh. Lembur dihitung per jam bulat ke bawah:
+    // pulang 16.40 tercatat nol jam, dan menagih laporan lembur
+    // untuk nol jam hanya menghambat orang pulang.
+
+    const jamKerjaSeandainya = hitungJamKerja({
+      tanggal: absensi.tanggal,
+      attendanceType: absensi.attendanceType,
+      bebasJamKerja: absensi.bebasJamKerja === true,
+      lemburOtomatis: absensi.lemburOtomatis === true,
+      jamMasuk: absensi.clockIn || "",
+      jamPulang: clockOut || "",
+      lemburDisetujui: absensi.lembur?.disetujui === true,
+    });
+
+    const menitLembur =
+      menitDariJam(jamKerjaSeandainya.pembulatanLembur) || 0;
+
+    const perluKinerjaLembur =
+      absensi.lemburOtomatis === true && menitLembur >= 60;
+
+    const kinerjaLemburBersih =
+      typeof kinerja_lembur === "string" ? kinerja_lembur.trim() : "";
+
+    if (perluKinerjaLembur && kinerjaLemburBersih.length < KINERJA_MIN) {
+      return res.status(400).json({
+        message:
+          `Anda lembur ${Math.floor(menitLembur / 60)} jam hari ini. ` +
+          `Kinerja lembur wajib diisi, minimal ${KINERJA_MIN} huruf.`,
+      });
+    }
+
+    if (kinerjaLemburBersih.length > KINERJA_MAX) {
+      return res.status(400).json({
+        message:
+          `Kinerja lembur maksimal ${KINERJA_MAX} huruf. ` +
+          `Saat ini ${kinerjaLemburBersih.length} huruf.`,
+      });
+    }
+
+    // =====================================================
     // UPDATE CLOCK OUT
     // =====================================================
 
@@ -699,6 +776,8 @@ router.put("/clock-out", async (req, res) => {
 
     absensi.kinerja_harian = kinerjaBersih;
 
+    absensi.kinerja_lembur = kinerjaLemburBersih;
+
     await absensi.save();
 
     console.log("=================================");
@@ -723,6 +802,7 @@ router.put("/clock-out", async (req, res) => {
         tanggal: absensi.tanggal,
         attendanceType: absensi.attendanceType,
         bebasJamKerja: absensi.bebasJamKerja === true,
+        lemburOtomatis: absensi.lemburOtomatis === true,
         jamMasuk: absensi.clockIn || "",
         jamPulang: absensi.clockOut || "",
         lemburDisetujui: absensi.lembur?.disetujui === true,
