@@ -5,9 +5,10 @@
 // Tiga endpoint, dipakai bersama oleh aplikasi web dan bot
 // WhatsApp SisKA:
 //
-//   GET /api/rekap/izin?pemohon=628…            cek hak akses
-//   GET /api/rekap?dari=&sampai=&pemohon=       data JSON
-//   GET /api/rekap/export?dari=&sampai=&pemohon= berkas .xlsx
+//   GET    /api/rekap/izin?pemohon=628…            cek hak akses
+//   GET    /api/rekap?dari=&sampai=&pemohon=       data JSON
+//   GET    /api/rekap/export?dari=&sampai=&pemohon= berkas .xlsx
+//   DELETE /api/rekap/:id?pemohon=628…             hapus 1 absensi
 //
 // HAK AKSES
 //
@@ -26,6 +27,7 @@
 // dengan kata sandi dan token.
 
 const express = require("express");
+const mongoose = require("mongoose");
 
 const router = express.Router();
 
@@ -36,6 +38,8 @@ const {
   normalizePhoneNumber,
   normalizeTanggal,
 } = require("../utils/format");
+
+const { hapusFotoAbsensi } = require("../utils/simpanFoto");
 
 // =========================================================
 // KONFIGURASI
@@ -225,6 +229,11 @@ async function ambilRekap(dari, sampai, filter = {}) {
     const p = petaPegawai.get(normalizePhoneNumber(a.no_wa)) || {};
 
     return {
+      // Dipakai halaman rekap untuk menghapus satu baris.
+      // Pasangan no_wa+tanggal sebenarnya juga unik, tapi _id
+      // tidak bisa salah tunjuk kalau kelak aturan itu berubah.
+      id: String(a._id),
+
       tanggal: a.tanggal,
       hari: namaHari(a.tanggal),
       nama: a.nama || p.nama || "",
@@ -337,6 +346,104 @@ router.get("/", async (req, res) => {
 
     return res.status(500).json({
       message: "Gagal mengambil rekap absensi.",
+      error: error.message,
+    });
+  }
+});
+
+// =========================================================
+// HAPUS SATU ABSENSI
+// =========================================================
+//
+// Ada untuk membersihkan sisa data pengujian dan salah absen
+// yang tidak bisa diperbaiki pegawainya sendiri — satu orang
+// hanya boleh punya satu absensi per tanggal, jadi baris yang
+// salah menghalangi absensi yang benar di tanggal itu.
+//
+// SENGAJA SATU BARIS PER PERMINTAAN.
+//
+// Tidak ada "hapus semua yang tampil". Rekap dibuka dengan
+// filter, dan filter yang salah pasang — rentang tanggal
+// terlalu lebar, nama belum dipilih — akan menghapus sebulan
+// kehadiran satu biro dalam satu klik. Penghapusannya permanen
+// dan tidak ada cadangan di aplikasi ini, sementara sisa data
+// pengujian jumlahnya sedikit. Kenyamanannya tidak sepadan.
+//
+// Setiap penghapusan dicatat ke log (terbaca lewat
+// `pm2 logs presensi-backend`): siapa yang menghapus, milik
+// siapa, dan tanggal berapa. Itu satu-satunya jejak yang
+// tersisa sesudah dokumennya hilang.
+
+router.delete("/:id", async (req, res) => {
+  try {
+    if (!apakahPetugas(req.query.pemohon)) {
+      return tolakBukanPetugas(res);
+    }
+
+    const { id } = req.params;
+
+    // Tanpa pemeriksaan ini, id yang bukan ObjectId membuat
+    // Mongoose melempar CastError dan pesannya sampai ke
+    // petugas sebagai "gagal" tanpa sebab yang jelas.
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: "ID absensi tidak valid.",
+      });
+    }
+
+    const baris = await Absensi.findById(id).lean();
+
+    if (!baris) {
+      return res.status(404).json({
+        message:
+          "Data absensi tidak ditemukan. Mungkin sudah dihapus " +
+          "dari perangkat lain — coba tekan Tampilkan lagi.",
+      });
+    }
+
+    await Absensi.deleteOne({ _id: baris._id });
+
+    // Foto dihapus SESUDAH dokumennya, dan kegagalannya tidak
+    // membatalkan apa pun: yang diminta petugas adalah barisnya
+    // hilang dari rekap. Berkas yatim yang tertinggal hanya
+    // memakan ruang disk, sedangkan membatalkan penghapusan
+    // karena satu berkas gagal dibuang akan membuat baris
+    // pengujian mustahil dibersihkan.
+    let fotoTerhapus = 0;
+
+    for (const foto of [baris.clockInPhoto, baris.clockOutPhoto]) {
+      try {
+        if (await hapusFotoAbsensi(foto)) fotoTerhapus++;
+      } catch (error) {
+        console.error(
+          `⚠️ Gagal menghapus foto ${foto}:`,
+          error.message
+        );
+      }
+    }
+
+    console.warn(
+      `🗑️ [HAPUS ABSENSI] petugas ${normalizePhoneNumber(req.query.pemohon)} ` +
+        `menghapus ${baris.tanggal} milik ${baris.nama || "-"} ` +
+        `(${baris.no_wa}) — masuk ${baris.clockIn || "-"}, ` +
+        `pulang ${baris.clockOut || "-"}, ${fotoTerhapus} foto ikut dihapus.`
+    );
+
+    return res.json({
+      message: `Absensi ${baris.nama || baris.no_wa} tanggal ${baris.tanggal} dihapus.`,
+      terhapus: {
+        id: String(baris._id),
+        nama: baris.nama || "",
+        no_wa: baris.no_wa,
+        tanggal: baris.tanggal,
+        foto: fotoTerhapus,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error hapus absensi:", error);
+
+    return res.status(500).json({
+      message: "Gagal menghapus data absensi.",
       error: error.message,
     });
   }

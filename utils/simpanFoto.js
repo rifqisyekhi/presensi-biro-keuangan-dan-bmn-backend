@@ -170,8 +170,79 @@ async function simpanFotoAbsensi({
   );
 }
 
+// =========================================================
+// HAPUS SATU FOTO
+// =========================================================
+
+// Kebalikan dari simpanFotoAbsensi: menerima path publik yang
+// tersimpan di dokumen absensi (mis.
+// "/uploads/Budi/08-2026/2026-08-18_masuk.jpg") dan menghapus
+// berkasnya dari disk.
+//
+// Mengembalikan true kalau ada berkas yang benar-benar
+// terhapus, false kalau nilainya bukan foto tersimpan atau
+// berkasnya memang sudah tidak ada.
+//
+// KEAMANAN: nilainya berasal dari database, tapi tetap
+// diperiksa. Path yang dibuat-buat (mis. "/uploads/../../.env")
+// tidak boleh sampai menghapus berkas di luar folder foto —
+// satu kesalahan di sini menghapus berkas yang salah, dan
+// penghapusan tidak bisa dibatalkan.
+
+async function hapusFotoAbsensi(pathPublik) {
+  if (typeof pathPublik !== "string" || !pathPublik) return false;
+
+  // Foto yang belum sempat tersimpan masih berupa data URL —
+  // tidak ada berkasnya untuk dihapus.
+  if (pathPublik.startsWith("data:")) return false;
+
+  let relatif = pathPublik;
+
+  // Dokumen lama bisa menyimpan URL lengkap, bukan path relatif.
+  if (/^https?:\/\//i.test(relatif)) {
+    try {
+      relatif = new URL(relatif).pathname;
+    } catch {
+      return false;
+    }
+  }
+
+  try {
+    relatif = decodeURIComponent(relatif);
+  } catch {
+    // Path yang tidak bisa didekode bukan path yang kita buat.
+    return false;
+  }
+
+  if (!relatif.startsWith(`${PUBLIC_PATH}/`)) return false;
+
+  const akar = path.resolve(UPLOAD_DIR);
+
+  const berkas = path.resolve(
+    akar,
+    `.${relatif.slice(PUBLIC_PATH.length)}`
+  );
+
+  if (berkas !== akar && !berkas.startsWith(akar + path.sep)) {
+    return false;
+  }
+
+  try {
+    await fs.unlink(berkas);
+
+    return true;
+  } catch (error) {
+    // Berkasnya sudah tidak ada. Itu hasil akhir yang sama
+    // dengan berhasil menghapus, jadi bukan kegagalan.
+    if (error.code === "ENOENT") return false;
+
+    throw error;
+  }
+}
+
 module.exports = {
   UPLOAD_DIR,
   PUBLIC_PATH,
   simpanFotoAbsensi,
+  hapusFotoAbsensi,
 };
