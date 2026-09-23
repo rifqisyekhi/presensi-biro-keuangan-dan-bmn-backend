@@ -9,6 +9,7 @@
 //   GET    /api/rekap?dari=&sampai=&pemohon=       data JSON
 //   GET    /api/rekap/export?dari=&sampai=&pemohon= berkas .xlsx
 //   DELETE /api/rekap/:id?pemohon=628…             hapus 1 absensi
+//   PATCH  /api/rekap/:id/status?pemohon=628…      ubah jenis kehadiran
 //
 // HAK AKSES
 //
@@ -72,6 +73,61 @@ const LABEL_JENIS = {
   WFH: "WFH (Dari Rumah)",
   DINAS: "Dinas Luar",
 };
+
+// Sengaja diturunkan dari LABEL_JENIS, bukan ditulis ulang:
+// dua daftar yang harus selalu sama isinya pasti berbeda pada
+// suatu hari.
+const JENIS_SAH = Object.keys(LABEL_JENIS);
+
+// =========================================================
+// PERUBAHAN STATUS
+// =========================================================
+
+// Perubahan paling akhir, dalam bentuk yang siap ditampilkan.
+// Yang lebih lama tetap tersimpan di dokumennya; yang
+// ditanyakan orang saat membaca rekap praktis selalu yang
+// terakhir — "kenapa baris ini sekarang tertulis begini".
+function perubahanTerakhir(riwayat) {
+  if (!Array.isArray(riwayat) || !riwayat.length) return null;
+
+  const akhir = riwayat[riwayat.length - 1];
+
+  return {
+    dari: String(akhir.dari || ""),
+    dariLabel: LABEL_JENIS[akhir.dari] || akhir.dari || "",
+    ke: String(akhir.ke || ""),
+    oleh: String(akhir.oleh || ""),
+    alasan: String(akhir.alasan || ""),
+    pada: akhir.pada ? new Date(akhir.pada).toISOString() : "",
+    jumlah: riwayat.length,
+  };
+}
+
+// Versi satu sel untuk Excel. Berkas itulah yang dikirim ke
+// pimpinan, jadi status yang pernah dibetulkan harus terbaca
+// di sana juga — bukan cuma di layar petugas.
+//
+// Zona waktu dikunci ke WIB: servernya boleh berjalan di UTC,
+// tapi yang membaca berkasnya duduk di Jakarta.
+function ringkasPerubahan(p) {
+  if (!p) return "";
+
+  const waktu = p.pada
+    ? new Date(p.pada).toLocaleString("id-ID", {
+        timeZone: "Asia/Jakarta",
+        dateStyle: "short",
+        timeStyle: "short",
+      })
+    : "";
+
+  return (
+    `Dari ${p.dariLabel || p.dari}` +
+    (p.oleh ? ` oleh ${p.oleh}` : "") +
+    (waktu ? `, ${waktu}` : "") +
+    (p.alasan ? ` — ${p.alasan}` : "") +
+    (p.jumlah > 1 ? ` (${p.jumlah}x diubah)` : "")
+  );
+}
 
 // =========================================================
 // DAFTAR PETUGAS
@@ -244,6 +300,10 @@ async function ambilRekap(dari, sampai, filter = {}) {
       kategori_pegawai: p.kategori_pegawai || "",
       jenis: LABEL_JENIS[a.attendanceType] || a.attendanceType || "",
       attendanceType: a.attendanceType || "",
+
+      // null selama statusnya belum pernah dibetulkan petugas —
+      // dan itu keadaan normal untuk hampir semua baris.
+      perubahanStatus: perubahanTerakhir(a.riwayatStatus),
       jamMasuk: a.clockIn || "",
       jamPulang: a.clockOut || "",
       lemburDisetujui: a.lembur?.disetujui === true,
@@ -457,6 +517,153 @@ router.delete("/:id", async (req, res) => {
 });
 
 // =========================================================
+// UBAH JENIS KEHADIRAN
+// =========================================================
+//
+// Jenis kehadiran dipilih pegawai saat absen masuk, padahal
+// harinya belum tentu berjalan seperti yang direncanakan:
+// berangkat WFO, lalu ditugaskan dinas luar sesudah makan
+// siang. Pegawainya tidak bisa membetulkan sendiri — satu
+// orang hanya boleh punya satu absensi per tanggal, dan jatah
+// hari itu sudah terpakai oleh absen masuk paginya.
+//
+// YANG IKUT BERUBAH
+//
+// Status bukan sekadar label. hitungJamKerja() membacanya:
+// begitu menjadi DINAS, kolom Jam Harus Checkout, Terlambat,
+// Menit Kerja, Durasi Lembur, dan Pembulatan Lembur ikut
+// dikosongkan — aturan jam kantor tidak berlaku di tempat
+// tugas. Sebaliknya, DINAS yang dikembalikan ke WFO membuat
+// kelimanya terisi lagi, termasuk keterlambatan yang tadinya
+// tidak muncul.
+//
+// Perhitungan itu dilakukan saat rekap DIBACA, bukan saat
+// disimpan, jadi satu penyimpanan di sini langsung mengubah
+// tampilan layar sekaligus isi berkas Excel. Tidak ada yang
+// perlu dihitung ulang di endpoint ini.
+//
+// YANG TIDAK DISENTUH
+//
+// Jam masuk, jam pulang, foto, titik GPS, dan kinerja harian
+// tetap apa adanya. Itu catatan tentang apa yang benar-benar
+// terjadi pagi tadi, dan tetap benar meski labelnya dikoreksi.
+//
+// JEJAK
+//
+// Setiap perubahan DITAMBAHKAN ke riwayatStatus — bukan
+// menimpa yang sebelumnya — dan ikut dicetak ke log. Status
+// adalah dasar perhitungan jam kerja; kalau bisa diubah tanpa
+// jejak, tidak ada cara menjawab "kenapa baris ini berubah"
+// enam bulan lagi.
+
+router.patch("/:id/status", async (req, res) => {
+  try {
+    if (!apakahPetugas(req.query.pemohon)) {
+      return tolakBukanPetugas(res);
+    }
+
+    const { id } = req.params;
+
+    // Tanpa pemeriksaan ini, id yang bukan ObjectId membuat
+    // Mongoose melempar CastError dan pesannya sampai ke
+    // petugas sebagai "gagal" tanpa sebab yang jelas.
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: "ID absensi tidak valid.",
+      });
+    }
+
+    const diminta = String(req.body?.attendanceType || "")
+      .trim()
+      .toUpperCase();
+
+    if (!JENIS_SAH.includes(diminta)) {
+      return res.status(400).json({
+        message:
+          "Jenis kehadiran tidak dikenali. Pilih WFO, WFH, atau DINAS.",
+      });
+    }
+
+    // Dipotong, bukan ditolak, kalau kepanjangan. Petugas
+    // sedang membetulkan data; menggagalkan penyimpanan karena
+    // catatannya dua baris kelewat panjang hanya menghambat
+    // tanpa melindungi apa pun.
+    const alasan = String(req.body?.alasan || "")
+      .trim()
+      .slice(0, 300);
+
+    const baris = await Absensi.findById(id);
+
+    if (!baris) {
+      return res.status(404).json({
+        message:
+          "Data absensi tidak ditemukan. Mungkin sudah dihapus " +
+          "dari perangkat lain — coba tekan Tampilkan lagi.",
+      });
+    }
+
+    const lama = String(baris.attendanceType || "").toUpperCase();
+
+    // Ditolak, bukan disimpan diam-diam. Menyimpan perubahan
+    // yang tidak mengubah apa pun akan menambah satu entri
+    // riwayat yang mengaku ada padahal tidak terjadi — dan
+    // riwayat itulah yang nanti dipakai menjelaskan baris ini.
+    if (lama === diminta) {
+      return res.status(400).json({
+        message: `Absensi ini memang sudah berstatus ${
+          LABEL_JENIS[diminta] || diminta
+        }.`,
+      });
+    }
+
+    const petugas = normalizePhoneNumber(req.query.pemohon);
+
+    baris.attendanceType = diminta;
+
+    baris.riwayatStatus.push({
+      dari: lama,
+      ke: diminta,
+      oleh: petugas,
+      alasan,
+      pada: new Date(),
+    });
+
+    await baris.save();
+
+    console.warn(
+      `✏️ [UBAH STATUS] petugas ${petugas} mengubah ${baris.tanggal} ` +
+        `milik ${baris.nama || "-"} (${baris.no_wa}) ` +
+        `dari ${lama || "-"} menjadi ${diminta}` +
+        (alasan ? ` — ${alasan}` : " — tanpa catatan"),
+    );
+
+    return res.json({
+      message:
+        `Status ${baris.nama || baris.no_wa} tanggal ${baris.tanggal} ` +
+        `diubah menjadi ${LABEL_JENIS[diminta] || diminta}.`,
+
+      // Dikembalikan lengkap supaya halaman rekap bisa
+      // memperbarui satu kartu saja, tanpa memuat ulang seluruh
+      // rentang dan melempar posisi gulir petugas kembali ke
+      // atas setiap kali.
+      absensi: {
+        id: String(baris._id),
+        attendanceType: diminta,
+        jenis: LABEL_JENIS[diminta] || diminta,
+        perubahanStatus: perubahanTerakhir(baris.riwayatStatus),
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error ubah status absensi:", error);
+
+    return res.status(500).json({
+      message: "Gagal mengubah status absensi.",
+      error: error.message,
+    });
+  }
+});
+
+// =========================================================
 // EXPORT EXCEL
 // =========================================================
 
@@ -498,6 +705,12 @@ const KOLOM = [
   { header: "Hari", key: "hari", width: 9 },
   { header: "Status", key: "jenis", width: 16 },
   { header: "Keterangan Cuti", key: "keteranganCuti", width: 19 },
+
+  // Kosong untuk hampir semua baris. Terisi hanya kalau petugas
+  // kepegawaian pernah membetulkan statusnya — dan justru baris
+  // seperti itulah yang paling perlu bisa ditelusuri, karena
+  // angka jam kerja di sebelah kanannya ikut berubah karenanya.
+  { header: "Perubahan Status", key: "perubahanStatus", width: 38 },
   { header: "Checkin", key: "jamMasuk", waktu: true, width: 9 },
   { header: "Checkout", key: "jamPulang", waktu: true, width: 9 },
   { header: "Jam Harus Checkout", key: "jamHarusCheckout", waktu: true, width: 11 },
@@ -628,6 +841,11 @@ function isiLembarRekap(sheet, data, dari, sampai) {
       ...baris,
       no: urut,
       keteranganCuti: "",
+
+      // Menimpa bentuk objek yang dipakai halaman rekap dengan
+      // satu kalimat — sel Excel tidak bisa memuat objek.
+      perubahanStatus: ringkasPerubahan(baris.perubahanStatus),
+
       ...hitungJamKerja(baris),
     };
 

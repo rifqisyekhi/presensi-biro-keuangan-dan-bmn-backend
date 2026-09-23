@@ -1,5 +1,27 @@
 const mongoose = require("mongoose");
 
+// =========================================================
+// SATU PERUBAHAN STATUS OLEH PETUGAS
+// =========================================================
+//
+// Dipakai sebagai isi riwayatStatus di bawah. Dibuat sebagai
+// skema tersendiri supaya _id otomatis bisa dimatikan: tiap
+// entri hanya pernah dibaca berurutan, tidak pernah ditunjuk
+// satu-satu, jadi id di dalamnya cuma menambah ukuran dokumen.
+const perubahanStatusSchema = new mongoose.Schema(
+  {
+    dari: { type: String, default: "" },
+    ke: { type: String, default: "" },
+
+    // Nomor WhatsApp petugas yang mengubah, sudah dinormalkan.
+    oleh: { type: String, default: "" },
+
+    alasan: { type: String, default: "" },
+    pada: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const absensiSchema = new mongoose.Schema(
   {
     no_wa: {
@@ -126,6 +148,28 @@ const absensiSchema = new mongoose.Schema(
     lemburOtomatis: {
       type: Boolean,
       default: false,
+    },
+
+    // =========================
+    // PERUBAHAN STATUS OLEH PETUGAS
+    // =========================
+    //
+    // Jenis kehadiran dipilih pegawai saat absen masuk, dan
+    // pilihan itu kadang berubah di tengah hari — berangkat
+    // WFO, lalu ditugaskan dinas luar sesudah makan siang.
+    // Pegawainya tidak bisa membetulkan sendiri (satu orang
+    // hanya boleh punya satu absensi per tanggal), jadi
+    // petugas kepegawaian yang mengubahnya lewat rekap.
+    //
+    // Disimpan sebagai RIWAYAT, bukan satu nilai terakhir.
+    // Status inilah dasar perhitungan jam harus checkout,
+    // keterlambatan, menit kerja, dan lembur — begitu diubah,
+    // tidak ada lagi jejak nilai aslinya di dokumen ini. Log
+    // pm2 memang mencatatnya juga, tapi log dirotasi dan
+    // akhirnya hilang; catatan di sini ikut umur dokumennya.
+    riwayatStatus: {
+      type: [perubahanStatusSchema],
+      default: [],
     },
 
     // =========================
