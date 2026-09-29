@@ -10,6 +10,7 @@
 //   GET    /api/rekap/export?dari=&sampai=&pemohon= berkas .xlsx
 //   DELETE /api/rekap/:id?pemohon=628…             hapus 1 absensi
 //   PATCH  /api/rekap/:id/status?pemohon=628…      ubah jenis kehadiran
+//   PATCH  /api/rekap/:id/jam?pemohon=628…         ubah jam masuk/pulang
 //
 // HAK AKSES
 //
@@ -101,6 +102,87 @@ function perubahanTerakhir(riwayat) {
     pada: akhir.pada ? new Date(akhir.pada).toISOString() : "",
     jumlah: riwayat.length,
   };
+}
+
+// =========================================================
+// JAM
+// =========================================================
+
+// Mengembalikan jam dalam bentuk baku "HH.MM", atau null kalau
+// tidak masuk akal sebagai jam.
+//
+// menitDariJam() sengaja tidak dipakai sendirian: ia menerima
+// "99.99" dan menjawab 6039 menit tanpa mengeluh. Yang dibaca
+// petugas adalah kotak teks bebas, jadi rentangnya harus
+// diperiksa di sini.
+function jamBaku(nilai) {
+  const teks = String(nilai ?? "").trim();
+
+  if (!teks) return null;
+
+  const cocok = /^(\d{1,2})[.:](\d{2})$/.exec(teks);
+
+  if (!cocok) return null;
+
+  const jam = Number(cocok[1]);
+  const menit = Number(cocok[2]);
+
+  if (jam > 23 || menit > 59) return null;
+
+  return jamDariMenit(jam * 60 + menit);
+}
+
+// Perubahan jam paling akhir, siap ditampilkan.
+function perubahanJamTerakhir(riwayat) {
+  if (!Array.isArray(riwayat) || !riwayat.length) return null;
+
+  const akhir = riwayat[riwayat.length - 1];
+
+  return {
+    dariMasuk: String(akhir.dariMasuk || ""),
+    keMasuk: String(akhir.keMasuk || ""),
+    dariPulang: String(akhir.dariPulang || ""),
+    kePulang: String(akhir.kePulang || ""),
+    oleh: String(akhir.oleh || ""),
+    alasan: String(akhir.alasan || ""),
+    pada: akhir.pada ? new Date(akhir.pada).toISOString() : "",
+    jumlah: riwayat.length,
+  };
+}
+
+// Versi satu sel untuk Excel. Hanya medan yang benar-benar
+// berubah yang disebut — menuliskan keduanya setiap kali membuat
+// selnya panjang dan yang penting jadi tenggelam.
+function ringkasPerubahanJam(p) {
+  if (!p) return "";
+
+  const waktu = p.pada
+    ? new Date(p.pada).toLocaleString("id-ID", {
+        timeZone: "Asia/Jakarta",
+        dateStyle: "short",
+        timeStyle: "short",
+      })
+    : "";
+
+  const bagian = [];
+
+  const tampil = (v) => v || "(kosong)";
+
+  if (p.dariMasuk !== p.keMasuk) {
+    bagian.push(`masuk ${tampil(p.dariMasuk)} → ${tampil(p.keMasuk)}`);
+  }
+
+  if (p.dariPulang !== p.kePulang) {
+    bagian.push(`pulang ${tampil(p.dariPulang)} → ${tampil(p.kePulang)}`);
+  }
+
+  return (
+    bagian.join(", ") +
+    (p.oleh ? ` oleh ${p.oleh}` : "") +
+    (waktu ? `, ${waktu}` : "") +
+    (p.alasan ? ` — ${p.alasan}` : "") +
+    (p.jumlah > 1 ? ` (${p.jumlah}x diubah)` : "")
+  );
 }
 
 // Versi satu sel untuk Excel. Berkas itulah yang dikirim ke
@@ -304,6 +386,7 @@ async function ambilRekap(dari, sampai, filter = {}) {
       // null selama statusnya belum pernah dibetulkan petugas —
       // dan itu keadaan normal untuk hampir semua baris.
       perubahanStatus: perubahanTerakhir(a.riwayatStatus),
+      perubahanJam: perubahanJamTerakhir(a.riwayatJam),
       jamMasuk: a.clockIn || "",
       jamPulang: a.clockOut || "",
       lemburDisetujui: a.lembur?.disetujui === true,
@@ -664,6 +747,184 @@ router.patch("/:id/status", async (req, res) => {
 });
 
 // =========================================================
+// UBAH JAM MASUK DAN JAM PULANG
+// =========================================================
+//
+// Absensi yang gagal di tengah jalan membuat pegawai rugi, dan
+// ruginya tidak kelihatan sebagai kesalahan siapa pun: fotonya
+// berkali-kali gagal diunggah sampai jam masuknya tercatat
+// terlambat, atau bot mentok sebelum absen pulang sehingga
+// kolomnya kosong — padahal orangnya hadir sampai sore. Karena
+// tidak semua orang absen lewat cadangan, kerugian itu menempel
+// di rekap yang dipakai menilai kinerjanya.
+//
+// Pegawainya tidak bisa membetulkan sendiri: satu orang hanya
+// boleh punya satu absensi per tanggal, dan jatah hari itu sudah
+// terpakai.
+//
+// YANG IKUT BERUBAH
+//
+// Jam adalah dasar SEMUA hitungan di rekap, jadi dampaknya lebih
+// luas daripada mengubah jenis kehadiran:
+//
+//   jam masuk   → Terlambat, Jam Harus Checkout, Menit Kerja,
+//                 dan lewat Jam Harus Checkout juga Lembur
+//   jam pulang  → Menit Kerja, Durasi Lembur, Pembulatan Lembur
+//
+// Semuanya dihitung saat rekap DIBACA, jadi satu penyimpanan di
+// sini langsung mengubah layar dan berkas Excel sekaligus.
+//
+// YANG TIDAK DISENTUH
+//
+// Foto, titik GPS, dan kinerja harian tetap apa adanya. Foto
+// bercap geotag itu bukti kehadiran di lokasi, dan cap waktu di
+// dalamnya sengaja TIDAK disesuaikan: menyunting bukti berbeda
+// sifatnya dari membetulkan catatan. Kalau jam di rekap berbeda
+// dari cap di foto, riwayat perubahannya yang menjelaskan.
+//
+// JAM PULANG BOLEH DIKOSONGKAN
+//
+// Kadang yang salah justru sebaliknya — jam pulang terisi padahal
+// orangnya belum pulang. Mengosongkannya mengembalikan baris itu
+// ke keadaan "belum absen pulang". Jam MASUK tidak boleh kosong:
+// dokumen absensinya lahir dari absen masuk, dan tanpa jam itu
+// seluruh barisnya kehilangan makna.
+
+router.patch("/:id/jam", async (req, res) => {
+  try {
+    if (!apakahPetugas(req.query.pemohon)) {
+      return tolakBukanPetugas(res);
+    }
+
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: "ID absensi tidak valid.",
+      });
+    }
+
+    const masukBaru = jamBaku(req.body?.clockIn);
+
+    if (!masukBaru) {
+      return res.status(400).json({
+        message:
+          "Jam masuk tidak valid. Tulis dalam bentuk JJ.MM, " +
+          "misalnya 07.30. Jam masuk tidak boleh dikosongkan.",
+      });
+    }
+
+    // Kosong itu SAH untuk jam pulang, dan artinya "belum absen
+    // pulang". Karena itu string kosong dibedakan dari isi yang
+    // salah tulis — keduanya tidak boleh diperlakukan sama.
+    const pulangDiminta = String(req.body?.clockOut ?? "").trim();
+
+    const pulangBaru = pulangDiminta ? jamBaku(pulangDiminta) : "";
+
+    if (pulangDiminta && !pulangBaru) {
+      return res.status(400).json({
+        message:
+          "Jam pulang tidak valid. Tulis dalam bentuk JJ.MM, " +
+          "misalnya 16.00 — atau kosongkan kalau memang belum pulang.",
+      });
+    }
+
+    // Pulang lebih awal dari masuk membuat Menit Kerja jatuh ke
+    // nol tanpa penjelasan apa pun di rekap. Ditolak di sini,
+    // supaya sebabnya terbaca sekarang dan bukan jadi teka-teki
+    // saat rekap dibaca bulan depan.
+    if (pulangBaru && menitDariJam(pulangBaru) < menitDariJam(masukBaru)) {
+      return res.status(400).json({
+        message:
+          `Jam pulang (${pulangBaru}) lebih awal daripada jam masuk ` +
+          `(${masukBaru}). Periksa lagi — kalau memang lintas hari, ` +
+          "absensinya perlu dicatat di tanggal berikutnya.",
+      });
+    }
+
+    const alasan = String(req.body?.alasan || "")
+      .trim()
+      .slice(0, 300);
+
+    const baris = await Absensi.findById(id);
+
+    if (!baris) {
+      return res.status(404).json({
+        message:
+          "Data absensi tidak ditemukan. Mungkin sudah dihapus " +
+          "dari perangkat lain — coba tekan Tampilkan lagi.",
+      });
+    }
+
+    const masukLama = String(baris.clockIn || "");
+    const pulangLama = String(baris.clockOut || "");
+
+    if (masukLama === masukBaru && pulangLama === pulangBaru) {
+      return res.status(400).json({
+        message: "Jamnya sama dengan yang sekarang, tidak ada yang diubah.",
+      });
+    }
+
+    const petugas = normalizePhoneNumber(req.query.pemohon);
+
+    baris.clockIn = masukBaru;
+
+    // null, bukan string kosong: itu yang dipakai seluruh kode
+    // lain sebagai penanda "belum absen pulang" — termasuk
+    // endpoint /belum-pulang yang dipakai pengingat bot.
+    baris.clockOut = pulangBaru || null;
+
+    baris.riwayatJam.push({
+      dariMasuk: masukLama,
+      keMasuk: masukBaru,
+      dariPulang: pulangLama,
+      kePulang: pulangBaru,
+      oleh: petugas,
+      alasan,
+      pada: new Date(),
+    });
+
+    await baris.save();
+
+    const jejak = [];
+
+    if (masukLama !== masukBaru) {
+      jejak.push(`masuk ${masukLama || "(kosong)"} → ${masukBaru}`);
+    }
+
+    if (pulangLama !== pulangBaru) {
+      jejak.push(`pulang ${pulangLama || "(kosong)"} → ${pulangBaru || "(kosong)"}`);
+    }
+
+    console.warn(
+      `🕑 [UBAH JAM] petugas ${petugas} mengubah ${baris.tanggal} ` +
+        `milik ${baris.nama || "-"} (${baris.no_wa}): ${jejak.join(", ")}` +
+        (alasan ? ` — ${alasan}` : " — tanpa catatan"),
+    );
+
+    return res.json({
+      message:
+        `Jam ${baris.nama || baris.no_wa} tanggal ${baris.tanggal} ` +
+        `diubah: ${jejak.join(", ")}.`,
+
+      absensi: {
+        id: String(baris._id),
+        jamMasuk: masukBaru,
+        jamPulang: pulangBaru,
+        perubahanJam: perubahanJamTerakhir(baris.riwayatJam),
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error ubah jam absensi:", error);
+
+    return res.status(500).json({
+      message: "Gagal mengubah jam absensi.",
+      error: error.message,
+    });
+  }
+});
+
+// =========================================================
 // EXPORT EXCEL
 // =========================================================
 
@@ -679,6 +940,7 @@ router.patch("/:id/status", async (req, res) => {
 const {
   hitungJamKerja,
   menitDariJam,
+  jamDariMenit,
   jabatanBebasJamKerja,
   jabatanLemburOtomatis,
 } = require("../utils/jamKerja");
@@ -711,6 +973,12 @@ const KOLOM = [
   // seperti itulah yang paling perlu bisa ditelusuri, karena
   // angka jam kerja di sebelah kanannya ikut berubah karenanya.
   { header: "Perubahan Status", key: "perubahanStatus", width: 38 },
+
+  // Sejajar dengan Perubahan Status, dan alasannya lebih kuat
+  // lagi: jam menggerakkan Terlambat, Menit Kerja, dan Lembur
+  // sekaligus. Angka yang sudah dibetulkan tidak boleh terlihat
+  // seperti angka yang tercatat sendiri.
+  { header: "Perubahan Jam", key: "perubahanJam", width: 38 },
   { header: "Checkin", key: "jamMasuk", waktu: true, width: 9 },
   { header: "Checkout", key: "jamPulang", waktu: true, width: 9 },
   { header: "Jam Harus Checkout", key: "jamHarusCheckout", waktu: true, width: 11 },
@@ -845,6 +1113,7 @@ function isiLembarRekap(sheet, data, dari, sampai) {
       // Menimpa bentuk objek yang dipakai halaman rekap dengan
       // satu kalimat — sel Excel tidak bisa memuat objek.
       perubahanStatus: ringkasPerubahan(baris.perubahanStatus),
+      perubahanJam: ringkasPerubahanJam(baris.perubahanJam),
 
       ...hitungJamKerja(baris),
     };

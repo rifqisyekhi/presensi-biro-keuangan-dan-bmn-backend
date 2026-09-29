@@ -22,6 +22,31 @@ const perubahanStatusSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// =========================================================
+// SATU PERUBAHAN JAM OLEH PETUGAS
+// =========================================================
+//
+// Isi riwayatJam di bawah. Jam masuk dan jam pulang dicatat
+// bersama dalam satu entri, bukan dua, karena petugas
+// membetulkannya dalam satu tindakan — dan yang ingin
+// direkonstruksi nanti adalah "baris ini diubah menjadi apa",
+// bukan medannya satu per satu.
+const perubahanJamSchema = new mongoose.Schema(
+  {
+    dariMasuk: { type: String, default: "" },
+    keMasuk: { type: String, default: "" },
+    dariPulang: { type: String, default: "" },
+    kePulang: { type: String, default: "" },
+
+    // Nomor WhatsApp petugas yang mengubah, sudah dinormalkan.
+    oleh: { type: String, default: "" },
+
+    alasan: { type: String, default: "" },
+    pada: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const absensiSchema = new mongoose.Schema(
   {
     no_wa: {
@@ -169,6 +194,27 @@ const absensiSchema = new mongoose.Schema(
     // akhirnya hilang; catatan di sini ikut umur dokumennya.
     riwayatStatus: {
       type: [perubahanStatusSchema],
+      default: [],
+    },
+
+    // =========================
+    // PERUBAHAN JAM OLEH PETUGAS
+    // =========================
+    //
+    // Absensi yang gagal di tengah jalan membuat pegawai rugi:
+    // jam masuknya tercatat terlambat karena fotonya berkali-kali
+    // gagal diunggah, atau jam pulangnya kosong sama sekali
+    // karena bot mentok — padahal orangnya hadir. Tanpa cara
+    // membetulkannya, kerugian itu menempel di rekap yang dipakai
+    // menilai kinerjanya.
+    //
+    // Jam adalah dasar SEMUA hitungan di rekap: keterlambatan,
+    // jam harus checkout, menit kerja, dan lembur. Karena itu
+    // perubahannya disimpan sebagai riwayat, sama seperti
+    // riwayatStatus — dan dengan alasan yang sama: log pm2
+    // dirotasi dan hilang, catatan di sini ikut umur dokumennya.
+    riwayatJam: {
+      type: [perubahanJamSchema],
       default: [],
     },
 
