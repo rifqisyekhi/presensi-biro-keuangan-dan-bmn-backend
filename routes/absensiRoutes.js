@@ -172,6 +172,77 @@ router.get("/today/:no_wa", async (req, res) => {
 });
 
 // =========================================================
+// =========================================================
+// PEGAWAI NON-ASN YANG BELUM ABSEN MASUK
+// =========================================================
+// Mengembalikan daftar pegawai non-ASN yang belum melakukan
+// clock-in pada tanggal tertentu.
+
+router.get("/belum-masuk", async (req, res) => {
+  try {
+    const tanggal =
+      normalizeTanggal(req.query.tanggal) || getToday();
+
+    // 1. Ambil nomor pegawai yang SUDAH clock-in pada tanggal ini
+    const absensiHariIni = await Absensi.find({
+      tanggal,
+      clockIn: { $nin: [null, ""] },
+    })
+      .select("no_wa")
+      .lean();
+
+    const noWaSudahMasuk = new Set(
+      absensiHariIni
+        .map((a) => normalizePhoneNumber(a.no_wa))
+        .filter(Boolean)
+    );
+
+    // 2. Kategori ASN yang diabaikan
+    const kategoriAsn = (
+      process.env.PRESENSI_KATEGORI_ASN || "Internal,ASN,PNS,PPPK"
+    )
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
+    // 3. Ambil semua pegawai aktif non-ASN
+    const semuaPegawai = await Pegawai.find({}).lean();
+
+    const belumMasuk = semuaPegawai
+      .filter((p) => {
+        const normWa = normalizePhoneNumber(p.no_wa);
+        if (!normWa) return false;
+
+        const kat = String(p.kategori_pegawai || "").trim().toLowerCase();
+        if (kat && kategoriAsn.includes(kat)) return false;
+
+        return !noWaSudahMasuk.has(normWa);
+      })
+      .map((p) => ({
+        no_wa: p.no_wa,
+        nama: p.nama || "",
+        jabatan: p.jabatan || "",
+        sub_unit: p.sub_unit || "",
+        kategori_pegawai: p.kategori_pegawai || "",
+      }))
+      .sort((a, b) => (a.nama || "").localeCompare(b.nama || "", "id"));
+
+    return res.json({
+      tanggal,
+      total: belumMasuk.length,
+      data: belumMasuk,
+    });
+  } catch (error) {
+    console.error("❌ Error belum-masuk:", error);
+
+    return res.status(500).json({
+      message: "Gagal mengambil daftar yang belum absen masuk.",
+      error: error.message,
+    });
+  }
+});
+
+// =========================================================
 // BELUM ABSEN PULANG
 // =========================================================
 //
@@ -235,7 +306,7 @@ router.get("/belum-pulang", async (req, res) => {
             jamPulangJadwal: jk.jamPulangJadwal,
           };
         })(),
-      })),
+      })).sort((a, b) => (a.nama || "").localeCompare(b.nama || "", "id")),
     });
   } catch (error) {
     console.error("❌ Error belum-pulang:", error);
