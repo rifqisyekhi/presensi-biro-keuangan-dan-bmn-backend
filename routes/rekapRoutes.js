@@ -963,7 +963,7 @@ const KOLOM = [
   { header: "No", key: "no", width: 5 },
   { header: "Nama Pegawai", key: "nama", width: 33 },
   { header: "NIP / NIK", key: "nip", width: 20 },
-  { header: "Tanggal", key: "tanggal", width: 12 },
+  { header: "Tanggal", key: "tanggal", width: 14 },
   { header: "Hari", key: "hari", width: 9 },
   { header: "Status", key: "jenis", width: 16 },
   { header: "Keterangan Cuti", key: "keteranganCuti", width: 19 },
@@ -1088,10 +1088,13 @@ function isiLembarRekap(sheet, data, dari, sampai) {
 
   sheet.views = [{ state: "frozen", ySplit: 4 }];
 
-  // Kolom jam ditulis sebagai nilai waktu Excel, bukan teks.
+  // Kolom tanggal & jam ditulis sebagai nilai asli Excel, bukan teks.
   // Kalau ditulis sebagai teks, Excel menandainya dengan
-  // segitiga hijau "angka disimpan sebagai teks" dan jamnya
-  // tidak bisa diurutkan atau dihitung.
+  // segitiga hijau "angka disimpan sebagai teks" dan tanggal/jamnya
+  // tidak bisa diurutkan, difilter kalender, atau dihitung.
+  sheet.getColumn("tanggal").numFmt = "dd/mm/yyyy";
+  sheet.getColumn("tanggal").alignment = { horizontal: "center" };
+
   for (const kolom of KOLOM) {
     if (kolom.waktu) sheet.getColumn(kolom.key).numFmt = "hh:mm";
   }
@@ -1117,6 +1120,14 @@ function isiLembarRekap(sheet, data, dari, sampai) {
 
       ...hitungJamKerja(baris),
     };
+
+    // Tanggal ditulis sebagai tipe Date asli Excel agar berjenis Date di Excel:
+    if (isi.tanggal) {
+      const [th, bl, hr] = String(isi.tanggal).split("-").map(Number);
+      if (th && bl && hr) {
+        isi.tanggal = new Date(Date.UTC(th, bl - 1, hr));
+      }
+    }
 
     // Excel menyimpan jam sebagai pecahan satu hari:
     // 11:53 = 713 menit / 1440 = 0,4951.
