@@ -39,6 +39,7 @@ const Pegawai = require("../models/Pegawai");
 const {
   normalizePhoneNumber,
   normalizeTanggal,
+  getToday,
 } = require("../utils/format");
 
 const { hapusFotoAbsensi } = require("../utils/simpanFoto");
@@ -73,6 +74,9 @@ const LABEL_JENIS = {
   WFO: "WFO",
   WFH: "WFH",
   DINAS: "Dinas Luar",
+  CUTI: "Cuti",
+  IZIN: "Izin",
+  ALPHA: "Alpha",
 };
 
 // Sengaja diturunkan dari LABEL_JENIS, bukan ditulis ulang:
@@ -296,7 +300,7 @@ function bacaFilter(req) {
     .trim()
     .toUpperCase();
 
-  const jenis = ["WFO", "WFH", "DINAS"].includes(jenisMentah)
+  const jenis = JENIS_SAH.includes(jenisMentah) || jenisMentah === "HADIR"
     ? jenisMentah
     : "";
 
@@ -340,9 +344,29 @@ function tautanFotoAbsolut(path) {
 // AMBIL DATA
 // =========================================================
 
+// Mengembalikan daftar tanggal "YYYY-MM-DD" antara tglAwal dan tglAkhir (inklusif)
+function daftarTanggalAntara(tglAwal, tglAkhir) {
+  const hasil = [];
+  const [y1, m1, d1] = String(tglAwal).split("-").map(Number);
+  const [y2, m2, d2] = String(tglAkhir).split("-").map(Number);
+  if (!y1 || !m1 || !d1 || !y2 || !m2 || !d2) return [tglAwal];
+
+  const cur = new Date(Date.UTC(y1, m1 - 1, d1));
+  const akhir = new Date(Date.UTC(y2, m2 - 1, d2));
+
+  while (cur <= akhir) {
+    hasil.push(cur.toISOString().slice(0, 10));
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return hasil;
+}
+
 // Menggabungkan dokumen absensi dengan data pegawai. Dokumen
 // absensi hanya menyimpan nama dan nomor, sedangkan petugas
 // juga membutuhkan NIP, jabatan, dan unit kerja.
+//
+// Pegawai Non-ASN yang tidak melakukan absen pada hari kerja
+// (Senin–Jumat) tetap dimunculkan di rekap dengan keterangan "Alpha".
 
 async function ambilRekap(dari, sampai, filter = {}) {
   const [absensi, pegawai] = await Promise.all([
@@ -361,6 +385,30 @@ async function ambilRekap(dari, sampai, filter = {}) {
     const kunci = normalizePhoneNumber(p.no_wa);
 
     if (kunci) petaPegawai.set(kunci, p);
+  }
+
+  // Identifikasi seluruh pegawai Non-ASN aktif (mis. PPNPN / bukan ASN)
+  const kategoriAsn = (
+    process.env.PRESENSI_KATEGORI_ASN || "Internal,ASN,PNS,PPPK"
+  )
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  const pegawaiNonASN = pegawai.filter((p) => {
+    const norm = normalizePhoneNumber(p.no_wa);
+    if (!norm) return false;
+    const kat = String(p.kategori_pegawai || "").trim().toLowerCase();
+    return !kat || !kategoriAsn.includes(kat);
+  });
+
+  // Catat kombinasi nomor + tanggal yang sudah memiliki dokumen absensi
+  const sudahAdaMap = new Set();
+  for (const a of absensi) {
+    const norm = normalizePhoneNumber(a.no_wa);
+    if (norm && a.tanggal) {
+      sudahAdaMap.add(`${norm}_${a.tanggal}`);
+    }
   }
 
   const semua = absensi.map((a) => {
@@ -414,15 +462,78 @@ async function ambilRekap(dari, sampai, filter = {}) {
     };
   });
 
-  // Daftar pegawai untuk isi dropdown disusun SEBELUM filter
-  // nama diterapkan. Kalau disusun sesudahnya, begitu petugas
-  // memilih satu nama, isi dropdown-nya menyusut jadi satu
-  // orang dan dia tidak bisa berpindah ke nama lain.
+  // Tambahkan baris "Alpha" untuk pegawai Non-ASN yang belum/tidak absen pada hari kerja
+  const hariIni = getToday();
+  const semuaTanggal = daftarTanggalAntara(dari, sampai);
+
+  for (const tgl of semuaTanggal) {
+    // Jangan buat Alpha untuk hari di masa depan
+    if (tgl > hariIni) continue;
+
+    // Hari Sabtu dan Minggu bukan hari kerja kantor (tidak ada kewajiban absen)
+    const dayOfWeek = new Date(`${tgl}T00:00:00Z`).getUTCDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) continue;
+
+    for (const p of pegawaiNonASN) {
+      const norm = normalizePhoneNumber(p.no_wa);
+      if (!norm) continue;
+
+      const kunci = `${norm}_${tgl}`;
+      if (!sudahAdaMap.has(kunci)) {
+        semua.push({
+          id: `alpha_${norm}_${tgl}`,
+          isVirtual: true,
+          tanggal: tgl,
+          hari: namaHari(tgl),
+          nama: p.nama || norm,
+          nip: p.nip || "",
+          no_wa: p.no_wa || norm,
+          jabatan: p.jabatan || "",
+          sub_unit: p.sub_unit || "",
+          kategori_pegawai: p.kategori_pegawai || "",
+          jenis: "Alpha",
+          attendanceType: "ALPHA",
+          perubahanStatus: null,
+          perubahanJam: null,
+          jamMasuk: "-",
+          jamPulang: "-",
+          lemburDisetujui: false,
+          bebasJamKerja: jabatanBebasJamKerja(p.jabatan),
+          lemburOtomatis: jabatanLemburOtomatis(p.jabatan),
+          kinerja: "-",
+          kinerjaLembur: "",
+          alamatMasuk: "-",
+          koordinatMasuk: "",
+          fotoMasuk: "",
+          alamatPulang: "-",
+          koordinatPulang: "",
+          fotoPulang: "",
+        });
+      }
+    }
+  }
+
+  // Urutkan berdasarkan tanggal lalu nama pegawai
+  semua.sort((a, b) => {
+    const tglCmp = a.tanggal.localeCompare(b.tanggal);
+    if (tglCmp !== 0) return tglCmp;
+    return String(a.nama || "").localeCompare(String(b.nama || ""), "id");
+  });
+
+  // Daftar pegawai untuk isi dropdown disusun dari seluruh pegawai Non-ASN dan yang ada di rekap
   const petaNama = new Map();
 
+  for (const p of pegawaiNonASN) {
+    const norm = normalizePhoneNumber(p.no_wa);
+    if (norm && !petaNama.has(norm)) {
+      petaNama.set(norm, p.nama || norm);
+    }
+  }
+
   for (const b of semua) {
-    if (b.no_wa && !petaNama.has(b.no_wa)) {
-      petaNama.set(b.no_wa, b.nama || b.no_wa);
+    const norm = normalizePhoneNumber(b.no_wa);
+    if (norm && !petaNama.has(norm)) {
+      petaNama.set(norm, b.nama || norm);
     }
   }
 
@@ -435,8 +546,14 @@ async function ambilRekap(dari, sampai, filter = {}) {
       return false;
     }
 
-    if (filter.jenis && b.attendanceType !== filter.jenis) {
-      return false;
+    if (filter.jenis) {
+      if (filter.jenis === "HADIR") {
+        if (!["WFO", "WFH", "DINAS"].includes(b.attendanceType)) return false;
+      } else if (filter.jenis === "CUTI") {
+        if (!["CUTI", "IZIN"].includes(b.attendanceType)) return false;
+      } else if (b.attendanceType !== filter.jenis) {
+        return false;
+      }
     }
 
     return true;
@@ -526,11 +643,17 @@ router.get("/", async (req, res) => {
 
 router.delete("/:id", async (req, res) => {
   try {
+    const { id } = req.params;
+
     if (!apakahPetugas(req.query.pemohon)) {
       return tolakBukanPetugas(res);
     }
 
-    const { id } = req.params;
+    if (id.startsWith("alpha_")) {
+      return res.status(400).json({
+        message: "Baris Alpha otomatis tidak dapat dihapus. Silakan gunakan tombol Ubah Status jika pegawai berstatus Cuti/Izin atau Hadir.",
+      });
+    }
 
     // Tanpa pemeriksaan ini, id yang bukan ObjectId membuat
     // Mongoose melempar CastError dan pesannya sampai ke
@@ -646,24 +769,13 @@ router.patch("/:id/status", async (req, res) => {
     }
 
     const { id } = req.params;
-
-    // Tanpa pemeriksaan ini, id yang bukan ObjectId membuat
-    // Mongoose melempar CastError dan pesannya sampai ke
-    // petugas sebagai "gagal" tanpa sebab yang jelas.
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({
-        message: "ID absensi tidak valid.",
-      });
-    }
-
     const diminta = String(req.body?.attendanceType || "")
       .trim()
       .toUpperCase();
 
     if (!JENIS_SAH.includes(diminta)) {
       return res.status(400).json({
-        message:
-          "Jenis kehadiran tidak dikenali. Pilih WFO, WFH, atau DINAS.",
+        message: `Jenis kehadiran tidak dikenali. Pilih salah satu: ${JENIS_SAH.join(", ")}.`,
       });
     }
 
@@ -675,43 +787,83 @@ router.patch("/:id/status", async (req, res) => {
       .trim()
       .slice(0, 300);
 
-    const baris = await Absensi.findById(id);
-
-    if (!baris) {
-      return res.status(404).json({
-        message:
-          "Data absensi tidak ditemukan. Mungkin sudah dihapus " +
-          "dari perangkat lain — coba tekan Tampilkan lagi.",
-      });
-    }
-
-    const lama = String(baris.attendanceType || "").toUpperCase();
-
-    // Ditolak, bukan disimpan diam-diam. Menyimpan perubahan
-    // yang tidak mengubah apa pun akan menambah satu entri
-    // riwayat yang mengaku ada padahal tidak terjadi — dan
-    // riwayat itulah yang nanti dipakai menjelaskan baris ini.
-    if (lama === diminta) {
-      return res.status(400).json({
-        message: `Absensi ini memang sudah berstatus ${
-          LABEL_JENIS[diminta] || diminta
-        }.`,
-      });
-    }
-
     const petugas = normalizePhoneNumber(req.query.pemohon);
 
-    baris.attendanceType = diminta;
+    let baris;
+    let lama = "ALPHA";
 
-    baris.riwayatStatus.push({
-      dari: lama,
-      ke: diminta,
-      oleh: petugas,
-      alasan,
-      pada: new Date(),
-    });
+    // Jika baris yang diubah adalah baris Alpha virtual (belum ada dokumen di database)
+    if (id.startsWith("alpha_")) {
+      const parts = id.split("_");
+      const nomor = parts[1];
+      const tanggal = parts[2];
 
-    await baris.save();
+      const p = await Pegawai.findOne({
+        $or: [
+          { no_wa: nomor },
+          { no_wa: nomor.startsWith("62") ? `0${nomor.slice(2)}` : nomor },
+        ],
+      }).lean();
+
+      baris = new Absensi({
+        no_wa: nomor,
+        nama: p?.nama || "",
+        tanggal,
+        attendanceType: diminta,
+        riwayatStatus: [
+          {
+            dari: "ALPHA",
+            ke: diminta,
+            oleh: petugas,
+            alasan,
+            pada: new Date(),
+          },
+        ],
+      });
+
+      await baris.save();
+    } else {
+      // Tanpa pemeriksaan ini, id yang bukan ObjectId membuat
+      // Mongoose melempar CastError dan pesannya sampai ke
+      // petugas sebagai "gagal" tanpa sebab yang jelas.
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          message: "ID absensi tidak valid.",
+        });
+      }
+
+      baris = await Absensi.findById(id);
+
+      if (!baris) {
+        return res.status(404).json({
+          message:
+            "Data absensi tidak ditemukan. Mungkin sudah dihapus " +
+            "dari perangkat lain — coba tekan Tampilkan lagi.",
+        });
+      }
+
+      lama = String(baris.attendanceType || "").toUpperCase();
+
+      if (lama === diminta) {
+        return res.status(400).json({
+          message: `Absensi ini memang sudah berstatus ${
+            LABEL_JENIS[diminta] || diminta
+          }.`,
+        });
+      }
+
+      baris.attendanceType = diminta;
+
+      baris.riwayatStatus.push({
+        dari: lama,
+        ke: diminta,
+        oleh: petugas,
+        alasan,
+        pada: new Date(),
+      });
+
+      await baris.save();
+    }
 
     console.warn(
       `✏️ [UBAH STATUS] petugas ${petugas} mengubah ${baris.tanggal} ` +
@@ -846,45 +998,81 @@ router.patch("/:id/jam", async (req, res) => {
       .trim()
       .slice(0, 300);
 
-    const baris = await Absensi.findById(id);
-
-    if (!baris) {
-      return res.status(404).json({
-        message:
-          "Data absensi tidak ditemukan. Mungkin sudah dihapus " +
-          "dari perangkat lain — coba tekan Tampilkan lagi.",
-      });
-    }
-
-    const masukLama = String(baris.clockIn || "");
-    const pulangLama = String(baris.clockOut || "");
-
-    if (masukLama === masukBaru && pulangLama === pulangBaru) {
-      return res.status(400).json({
-        message: "Jamnya sama dengan yang sekarang, tidak ada yang diubah.",
-      });
-    }
-
     const petugas = normalizePhoneNumber(req.query.pemohon);
+    let baris;
+    let masukLama = "";
+    let pulangLama = "";
 
-    baris.clockIn = masukBaru;
+    if (id.startsWith("alpha_")) {
+      const match = /^alpha_(\d+)_(\d{4}-\d{2}-\d{2})$/.exec(id);
+      if (!match) {
+        return res.status(400).json({ message: "Format ID tidak valid." });
+      }
+      const [, normWa, tgl] = match;
+      const dataPegawai = await Pegawai.findOne({
+        no_wa: { $regex: new RegExp(normWa + "$") },
+      });
 
-    // null, bukan string kosong: itu yang dipakai seluruh kode
-    // lain sebagai penanda "belum absen pulang" — termasuk
-    // endpoint /belum-pulang yang dipakai pengingat bot.
-    baris.clockOut = pulangBaru || null;
+      baris = new Absensi({
+        no_wa: dataPegawai ? dataPegawai.no_wa : normWa,
+        nama: dataPegawai ? dataPegawai.nama : "",
+        tanggal: tgl,
+        attendanceType: "WFO",
+        clockIn: masukBaru,
+        clockOut: pulangBaru || null,
+        riwayatJam: [
+          {
+            dariMasuk: "",
+            keMasuk: masukBaru,
+            dariPulang: "",
+            kePulang: pulangBaru || "",
+            oleh: petugas,
+            alasan: alasan || "Pencatatan jam untuk pegawai Alpha",
+            pada: new Date(),
+          },
+        ],
+      });
 
-    baris.riwayatJam.push({
-      dariMasuk: masukLama,
-      keMasuk: masukBaru,
-      dariPulang: pulangLama,
-      kePulang: pulangBaru,
-      oleh: petugas,
-      alasan,
-      pada: new Date(),
-    });
+      await baris.save();
+    } else {
+      baris = await Absensi.findById(id);
 
-    await baris.save();
+      if (!baris) {
+        return res.status(404).json({
+          message:
+            "Data absensi tidak ditemukan. Mungkin sudah dihapus " +
+            "dari perangkat lain — coba tekan Tampilkan lagi.",
+        });
+      }
+
+      masukLama = String(baris.clockIn || "");
+      pulangLama = String(baris.clockOut || "");
+
+      if (masukLama === masukBaru && pulangLama === pulangBaru) {
+        return res.status(400).json({
+          message: "Jamnya sama dengan yang sekarang, tidak ada yang diubah.",
+        });
+      }
+
+      baris.clockIn = masukBaru;
+
+      // null, bukan string kosong: itu yang dipakai seluruh kode
+      // lain sebagai penanda "belum absen pulang" — termasuk
+      // endpoint /belum-pulang yang dipakai pengingat bot.
+      baris.clockOut = pulangBaru || null;
+
+      baris.riwayatJam.push({
+        dariMasuk: masukLama,
+        keMasuk: masukBaru,
+        dariPulang: pulangLama,
+        kePulang: pulangBaru,
+        oleh: petugas,
+        alasan,
+        pada: new Date(),
+      });
+
+      await baris.save();
+    }
 
     const jejak = [];
 
@@ -1160,9 +1348,9 @@ function isiLembarRekap(sheet, data, dari, sampai) {
       sel.font = { color: { argb: "FF1D4ED8" }, underline: true };
     }
 
-    // Absensi yang belum ada jam pulangnya ditandai supaya
+    // Absensi WFO/WFH yang belum ada jam pulangnya ditandai supaya
     // langsung terlihat saat diperiksa.
-    if (!baris.jamPulang) {
+    if (!baris.jamPulang && ["WFO", "WFH"].includes(baris.attendanceType)) {
       row.getCell("jamPulang").fill = {
         type: "pattern",
         pattern: "solid",
@@ -1184,10 +1372,13 @@ function isiLembarRingkasan(sheet, data) {
     { header: "Nama", key: "nama", width: 28 },
     { header: "NIP", key: "nip", width: 22 },
     { header: "Unit Kerja", key: "sub_unit", width: 22 },
-    { header: "Jumlah Hari Absen", key: "total", width: 18 },
+    { header: "Total Hari", key: "total", width: 14 },
+    { header: "Hadir (Total)", key: "hadir", width: 16 },
     { header: "WFO", key: "wfo", width: 8 },
     { header: "WFH", key: "wfh", width: 8 },
     { header: "Dinas Luar", key: "dinas", width: 12 },
+    { header: "Cuti / Izin", key: "cuti", width: 14 },
+    { header: "Alpha", key: "alpha", width: 10 },
     { header: "Belum Absen Pulang", key: "belumPulang", width: 20 },
   ];
 
@@ -1205,9 +1396,12 @@ function isiLembarRingkasan(sheet, data) {
         nip: baris.nip,
         sub_unit: baris.sub_unit,
         total: 0,
+        hadir: 0,
         wfo: 0,
         wfh: 0,
         dinas: 0,
+        cuti: 0,
+        alpha: 0,
         belumPulang: 0,
       });
     }
@@ -1216,11 +1410,24 @@ function isiLembarRingkasan(sheet, data) {
 
     r.total++;
 
-    if (baris.attendanceType === "WFO") r.wfo++;
-    if (baris.attendanceType === "WFH") r.wfh++;
-    if (baris.attendanceType === "DINAS") r.dinas++;
+    if (baris.attendanceType === "WFO") {
+      r.wfo++;
+      r.hadir++;
+    } else if (baris.attendanceType === "WFH") {
+      r.wfh++;
+      r.hadir++;
+    } else if (baris.attendanceType === "DINAS") {
+      r.dinas++;
+      r.hadir++;
+    } else if (baris.attendanceType === "CUTI" || baris.attendanceType === "IZIN") {
+      r.cuti++;
+    } else if (baris.attendanceType === "ALPHA") {
+      r.alpha++;
+    }
 
-    if (!baris.jamPulang) r.belumPulang++;
+    if (!baris.jamPulang && ["WFO", "WFH"].includes(baris.attendanceType)) {
+      r.belumPulang++;
+    }
   }
 
   const urut = [...per.values()].sort((a, b) =>

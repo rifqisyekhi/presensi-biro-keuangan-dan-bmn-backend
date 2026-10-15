@@ -66,7 +66,7 @@ const absensiSchema = new mongoose.Schema(
 
     attendanceType: {
       type: String,
-      enum: ["WFH", "WFO", "DINAS"],
+      enum: ["WFH", "WFO", "DINAS", "CUTI", "IZIN", "ALPHA"],
       required: true,
     },
 
