@@ -71,7 +71,7 @@ const NAMA_HARI = [
 
 const LABEL_JENIS = {
   WFO: "WFO",
-  WFH: "WFH (Dari Rumah)",
+  WFH: "WFH",
   DINAS: "Dinas Luar",
 };
 
